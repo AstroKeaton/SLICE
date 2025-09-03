@@ -425,18 +425,20 @@ def extract_aperture(r, pixco, useapprox=False, silent=False):
     
     mask = np.zeros(shape[:2], dtype=float)
 
-    # Handle 'pixel' case
     pixco = np.array(pixco)
+
+    # Handle 'pixel' case
     if pixco.ndim == 1 and pixco.shape[0] == 2:
         region = 'pixel'
         s = data[pixco[0], pixco[1], :]
         mask[pixco[0], pixco[1]] = 1
 
     # Handle 'list' case
-    elif pixco.shape[0] == 2 and pixco.shape[1] > 1:
-        region = 'list'
-        s = np.nanmedian(data[pixco[0], pixco[1], :], axis=(0,))
-        mask[pixco[0], pixco[1]] = 1
+    elif len(pixco.shape)>1:
+        if pixco.shape[0] == 2 and pixco.shape[1] > 1:
+            region = 'list'
+            s = np.nanmedian(data[pixco[0], pixco[1], :], axis=(0,))
+            mask[pixco[0], pixco[1]] = 1
 
     # Handle 'all' case
     elif pixco.size == 1:
@@ -852,6 +854,7 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1):
         plt.xlabel('Wavelength (um)')
         plt.ylabel(f'Flux ({r["bunit"]})')
         plt.savefig(f"{outname}-chunk{i+1}.png" if nchunk > 1 else f"{outname}.png")
+        plt.close()
 
         # Print peaks
         for j, (loc, amp) in enumerate(p):
@@ -866,19 +869,19 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1):
     # Write output files
     s2f = np.sqrt(np.log(256))
     with open(f'{outname}-peaklist.txt', 'w') as fp:
-        fp.write(f"%% Cube: {fname}\n")
-        fp.write(f"%% Region: {region}\n")
+        fp.write(f"# Cube: {fname}\n")
+        fp.write(f"# Region: {region}\n")
         if region == 'pixel':
             fp.write(f"pixel {pixco[0]}, {pixco[1]}\n")
         elif region == 'list':
             fp.write("list " + " ".join(map(str, pixco[0])) + "\n")
-            fp.write("%%              " + " ".join(map(str, pixco[1])) + "\n")
+            fp.write("#              " + " ".join(map(str, pixco[1])) + "\n")
         elif region == 'circle' and isinstance(pixco, list):
             fp.write(f"circle {pixco[0]},{pixco[1]},{pixco[2]}\n")
         else:
-            fp.write("undefined\n")
+            fp.write("# undefined\n")
 
-        fp.write("%% num wave(um) peak(MJy/sr) GaussK(MJy/sr) GaussFWHM(um) GaussX(um) Flux(W/m2/sr) eGaussK eGaussS eGaussX eFlux flag\n")
+        fp.write(f"# num wave(um) peak({r["bunit"]}) GaussK({r["bunit"]}) GaussFWHM(um) GaussX(um) Flux(W/m2/sr) eGaussK eGaussS eGaussX eFlux flag\n")
         for i in range(np_detected):
             S_abs = abs(q_result['S'][i])
             flux = q_result['area'][i]
@@ -1312,7 +1315,7 @@ def readNIST(fname):
 
 #####################################################################################
 #####LineID code ####################################################################
-def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
+def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, skiprows=3):
     '''
     Line identifier that goes through peaks extracted from
     CatPeaks and identifies likely lines corresponding to them
@@ -1334,6 +1337,8 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
     cat_path: str 
         optional path to line list 
         if lists are not in the same directory.
+    skiprows : int
+        number of rows to skip in linefile, includes comments
         
     Returns:
     .txt file containing information on likely identifed lines given characteristics.
@@ -1356,9 +1361,9 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
             fp.readline(); fp.readline()
             ln = fp.readline()
             if "Gauss" in ln:
-                cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(12), unpack=True)
+                cols = np.loadtxt(fname, skiprows=skiprows, usecols=range(12), unpack=True)
             else:
-                cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(3), unpack=True)
+                cols = np.loadtxt(fname, skiprows=skiprows, usecols=range(3), unpack=True)
         lineno, wv = cols[0].astype(int), cols[1]
     elif isinstance(linefile, (list, np.ndarray)):
         wv = np.array(linefile)
@@ -1944,22 +1949,26 @@ def plotID(linename, specname, savefig=False, outname=None):
     import numpy as np
     import matplotlib.pyplot as plt
     
-    basedata = np.loadtxt(specname)
+    hdr = np.loadtxt(specname,dtype=str,delimiter=' ',comments='%',skiprows=6,max_rows=1)
+    bunit = hdr[-1].replace('}','').replace("'","")
+    basedata = np.loadtxt(specname)#,skiprows=skiprows,usecols=(1,2))
     x, y = basedata[:, 0], basedata[:, 1]
     top = max(y)
     
     res = readLineID(linename)
     best_labels = [b["best"]["label"] for b in res["blocks"] if b["best"]]
-    obwave = [k['obs_wv_um'] for k in res['blocks']]
+    obwave = [k['obs_wv_um'] for k in res['blocks'] if k['best']]
     
     plt.figure(figsize=(9,8))
     plt.plot(x, y, color='k', lw=1, zorder=10)
+    # plt.xscale('log')
     plt.yscale('log')
-    plt.xlabel('Wavelength (um)')
-    plt.ylabel('Flux (MJy/sr)')
+    plt.xlabel('Wavelength ($\\mu$m)')
+    plt.ylabel('Flux ('+bunit+')')
+    plt.minorticks_on()
     
     for j in range(len(obwave)):
-        plt.axvline(obwave[j], color='r', ls='--', alpha=0.6, zorder=5)
+        plt.axvline(obwave[j], color='r', ls='-', alpha=0.2, zorder=5)
         plt.text(obwave[j]-0.05, top*0.5, best_labels[j], rotation=90,
                  ha='center', va='bottom', fontsize=8, color='red')
         
@@ -1967,8 +1976,8 @@ def plotID(linename, specname, savefig=False, outname=None):
         if outname is None:
             raise ValueError('Must define a path for figure to save to')
         plt.savefig(outname, bbox_inches='tight')
-    
-    plt.show()
+    else:
+        plt.show()
     
     
     return
