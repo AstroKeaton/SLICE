@@ -19,7 +19,7 @@ It is developed with JWST data in mind but should be applicable to all IR data.
 
 
 ## How to Install 
-# DO NOT TRY TO PIP INSTALL
+# DO NOT TRY TO DO A REGULAR PIP INSTALL
 
 ### Required packages
 
@@ -31,6 +31,13 @@ SLICE requires:
 - pandas
 
 ### Developer install (editable mode)
+To Regular install try 
+
+```bash
+pip install git+https://github.com/yourusername/SLICE.git
+```
+
+
 If you plan to modify the source code, install in editable mode:
 
 ```bash
