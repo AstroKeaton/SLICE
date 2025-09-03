@@ -19,6 +19,7 @@ It is developed with JWST data in mind but should be applicable to all IR data.
 
 
 ## How to Install 
+# DO NOT TRY TO PIP INSTALL
 
 ### Required packages
 
