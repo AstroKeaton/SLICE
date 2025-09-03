@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "SLICE"                 # package name (shown on PyPI eventually if released)
+version = "0.1.0"                # update as you release
+description = "Tools for spectral analysis and line extraction"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Keaton Donaghue", email = "kdonaghu@umd.edu" },
+  { name = "Alberto Bolatto", email = "bolatto@umd.edu"  }
+]
+keywords = ["astronomy", "spectroscopy", "astrophysics"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Astronomy"
+]
+requires-python = ">=3.8"
+dependencies = [
+  "numpy",
+  "pandas",
+  "scipy",
+  "matplotlib",
+  "astropy"
+]
+
+[tool.setuptools]
+packages = ["SLICE"]
+
+[tool.setuptools.package-data]
+SLICE = ["line_lists/*"]   # ensures your line_lists/ ships with the package
+
+[project.urls]
+"Homepage" = "https://github.com/AstroKeaton/SLICE"
+"Bug Tracker" = "https://github.com/AstroKeaton/SLICE/issues"

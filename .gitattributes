@@ -1,0 +1,16 @@
+# Ensure consistent line endings across platforms
+* text=auto eol=lf
+
+# Explicitly enforce LF endings for source code and data files
+*.py   text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+*.csv  text eol=lf
+*.lst  text eol=lf
+*.html text eol=lf
+
+# Binary files should not be modified by Git
+*.fits binary
+*.png  binary
+*.jpg  binary
+*.pdf  binary

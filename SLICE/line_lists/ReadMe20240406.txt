@@ -1,0 +1,39 @@
+Byte-by-byte Description of file
+--------------------------------------------------------------------------------
+   Bytes Format  Units   Explanations
+--------------------------------------------------------------------------------
+   1-  6  A6     ---     Model name
+   8- 24  F17.14 micron  Wavelength in vacuum
+  26- 33  A8     ---     Species
+  35- 74  A40    ---     Transition information
+  76- 84  E9.3   s-1     Einstein A-coefficient
+  86- 96  F11.1  K       Upper level term energy
+  98-147  A50    ---     Comments, including the information on the dust feature
+--------------------------------------------------------------------------------
+
+References
+For the atomic transition, the data are taken from the atomic line database at
+University of Kentucky (van Hoof 2018, https://www.pa.uky.edu/~peter/newpage/).
+For the molecular hydrogen, the data of Roueff et al. (2019) are used.  We adopt the 
+CO and HD data from the HITRAN (Gordon et al. 2022, https://hitran.org). For CH+, 
+the data of Changala et al. (2021) are used.  The data of OH are taken from Tabone 
+et al. (2021) and Zannese et al. (2024) using Yousefi et al. (2018) and Brooke et al. (2016).  
+For C60, the data in Brieva et al. (2016) are taken.  The data of Aromatic Infrared Bands (AIBs)
+shortwards of 17um are taken from Peeters et al. (2023) and Chown et al. (2023) while 
+the data of Aromatic Infrared Bands (AIBs) longwards of 17um  from Smith et al. (2007).  
+For the data of ice species, Gibb et al. (2004) and Boogert et al. (2015) are used.
+
+Boogert, A. C. A., Gerakines, P. A., & Whittet, D. C. B. 2015, ARA&A, 53, 541Brieva, A. C., Gredel, R., Jäger, C., Huisken, F., & Henning, T. 2016, ApJ, 826, 122Brooke, J. S. A., Bernath, P. F., Western, C. M., et al. 2016, J. Quant. Spectr. Rad. Transf., 168, 142
+Changala, P. B., Neufeld, D. A., & Godard, B. 2021, ApJ, 917, 16
+Chown, R., Sidhu, A., Peeters, E., et al. 2024, A&A, in press (doi:10.1051/0004-6361/202346662)
+Endres, C. P., Schlemmer, S., Schilke, P., Stutzki, J., & Müller, H. S. P. 2016, Journal of Molecular Spectroscopy, 327, 95
+Gordon, I. E., Rothman, L. S., Hargreaves, R. J., et al. 2022, J. Quant. Spectr. Rad. Transf., 277, 107949
+Gibb, E. L., Whittet, D. C. B., Boogert, A. C. A., & Tielens, A. G. G. M. 2004, ApJS, 151, 35
+Peeters, E., Habart, E., Berné, O., et al., 2024, A&A, in press (https://ui.adsabs.harvard.edu/abs/2023arXiv231008720P/abstract)
+Rothman, L. S., Gordon, I. E., Babikov, Y., et al. 2013, J. Quant. Spectr. Rad. Transf., 130, 4
+Roueff, E., Abgrall, H., Czachorowski, P., et al. 2019, A&A, 630, A58
+Smith, J. D. T., Armus, L., Dale, D. A., et al. 2007, PASP, 119, 1133
+Tabone, B., van Hemert, M. C., van Dishoeck, E. F., & Black, J. H. 2021, A&A, 650, A192
+van Hoof, P. A. M. 2018, Galaxies, 6, 63
+Yousefi, M., Bernath, P. F., Hodges, J., & Masseron, T. 2018, J. Quant. Spectr. Rad. Transf., 217, 416
+Zannese, M., Tabone, B., Habart, E. et al. 2024, Nature Astronomy (doi: 10.1038/s41550-024-02203-0) 
