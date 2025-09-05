@@ -703,7 +703,7 @@ def _sigChans(xx, yy, noise, snr, thr):
 
     return pp[:npk]
 
-def _fitLines(wv, spec, peaks):
+def _fitLines(wv, spec, peaks, spec_unit):
     '''
     Goes through peak list and fits gaussians to them
     removes continuum. produces array with the gaussian
@@ -717,26 +717,31 @@ def _fitLines(wv, spec, peaks):
     wv : array_like
         1D array of wavelengths in microns
     spec : array_like
-        1D array of fluxes at each wavelength
+        1D array of fluxes at each wavelength with unit spec_unit
     peaks : array_like
         2D array of peak locations and amplitudes from _sigChans
+    spec_unit : str
+        Unit of spectral data
 
     Returns
     -------
     q : dict
         Dictionary of fitted parameters for each line
-
     ymodel : array_like
         The model spectrum based on the identified and fitted line
-
     smo : array_like
         A smoothed version of the spectrum
+    flux_unit : str
+        The unit for the computed flux of the Gaussian fit, either W m^-2 or W m^-2 sr^-1 depending if spec_unit is per solid angle or not.
 
     '''
     
     
     from scipy.signal import firwin, filtfilt
     from scipy.interpolate import interp1d
+    import astropy.units as u
+
+    spec_unit = u.Unit(spec_unit)
     
     c = 3e8  # speed of light (m/s)
     peaklist = peaks[:, 0]
@@ -825,10 +830,15 @@ def _fitLines(wv, spec, peaks):
             (4 * q["S"][i]**2 / q["X0"][i]**6) * q["eX0"][i]**2
         )
 
-        q["area"][i] = 1e-20 * np.sqrt(2 * np.pi) * q["K"][i] * dnu
-        q["earea"][i] = 1e-20 * np.sqrt(2 * np.pi) * np.sqrt(
-            dnu**2 * q["eK"][i]**2 + q["K"][i]**2 * ednu**2
-        )
+        #find total flux under Gaussian, convert to W/m2/sr
+        flux = np.sqrt(2 * np.pi) * q["K"][i]*spec_unit * dnu*u.Hz
+        eflux = np.sqrt(2 * np.pi) * np.sqrt((dnu*u.Hz)**2 * (q["eK"][i]*spec_unit)**2 + (q["K"][i]*spec_unit)**2 * (ednu*u.Hz)**2)
+        if ("sr^-1" in spec_unit.to_string()) or ("arcsec^-2" in spec_unit.to_string()) or ("deg^-2" in spec_unit.to_string()):
+            flux_unit = u.W/u.m**2/u.sr
+        else:
+            flux_unit = u.W/u.m**2
+        q["area"][i] = flux.to(flux_unit).value
+        q["earea"][i] = eflux.to(flux_unit).value
 
         q["flag"][i] = err
         if abs(X0o[ix_self] - X0[ix_self]) > 2 * np.mean(np.diff(wvreg)):
@@ -840,7 +850,7 @@ def _fitLines(wv, spec, peaks):
 
         ymodel += q["K"][i] * np.exp(-((wv - q["X0"][i]) / (np.sqrt(2) * q["S"][i]))**2)
 
-    return q, ymodel, smo
+    return q, ymodel, smo, flux_unit.to_string('console')
 
 def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1, ext=1, verbose=False):
     '''
@@ -951,7 +961,7 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1, ext=1, verbose=
         scc = np.median(np.abs(cc - np.median(cc))) / 0.6745  # MAD
 
         p = _sigChans(dx, cc, scc, snr, thr)
-        q, ymo, cont = _fitLines(xx, yy, p)
+        q, ymo, cont, flux_unit = _fitLines(xx, yy, p, spec_unit)
 
         np_detected += len(p)
         pp.extend(p)
@@ -999,7 +1009,7 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1, ext=1, verbose=
         else:
             fp.write("\n")
 
-        fp.write(f"# num wave(um) peak({spec_unit}) GaussK({spec_unit}) GaussFWHM(um) GaussX(um) Flux(W/m2/sr) eGaussK eGaussS eGaussX eFlux flag\n")
+        fp.write(f"# num wave(um) peak({spec_unit}) GaussK({spec_unit}) GaussFWHM(um) GaussX(um) Flux({flux_unit}) eGaussK eGaussS eGaussX eFlux flag\n")
         for i in range(np_detected):
             S_abs = abs(q_result["S"][i])
             flux = q_result["area"][i]
