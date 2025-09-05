@@ -1419,6 +1419,36 @@ def _readNIST(fname):
             "RestValue": np.array(RestValue, dtype=float),
             "transition": np.array(transition)}
 
+def _print_catalog_names(ignore_cats=None):
+    ''' Helper function that prints the possible catalog names and brief info to the terminal.
+    Helpful for the user to decide which (if any) catalogs to exclude.
+
+    Parameters
+    ----------
+    ignore_cats : str, list of str, or None
+        if not None, don't print the information about the listed catalogs (Default: None)
+
+    '''
+    import os
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    catdir = os.path.join(script_dir, "line_lists")
+
+    catnames = [
+        "Atomic-Ionic_FineStructure.csv", "Atomic-Ionic.csv", "H-He.csv", "H2.csv",
+        "HeI-HeII.csv", "CO.csv", "publis20240406.lst",
+        "ISOLineList.txt", "NIST-ASDLines.html"]
+
+    if ignore_cats != None:
+        for cname in ignore_cats:
+            try:
+                catnames.remove(cname)
+            except ValueError:
+                logger.error("Invalid catalog name %s in 'ignore_cats'. Proceeding without removing.")
+
+    print('Available line catalogs are: '+', '.join(catnames))
+    return
+
 
 #####################################################################################
 #####LineID code ####################################################################
