@@ -407,25 +407,33 @@ def _rfits(file, ext=1, option=None, bval=np.nan):
 
         return result
 
-def _aperture(x, y, xc, yc, psize, rad):
+def _aperture(xy, psize, rad, offsets = (0.,0.)):
     """
     Compute the fractional contribution of each square pixel (of size psize)
-    in an image to a circular aperture centered on (xc, yc) of radius rad.
+    in an image to a circular aperture of radius rad.
     
     function is used in _extract_aperture
     
     Parameters
     ----------
-    x, y   : arrays of pixel center coordinates (same shape)
-    xc, yc : coordinates of the circular aperture center
-    psize  : pixel size (assumes square pixels)
-    rad    : aperture radius
+    xy : tuple of array_like
+        tuple of 2D arrays (x, y) containing offsets of pixel center coordinates from aperture center in arcsec, x and y must have the same shape
+    psize : int
+        pixel size in arcsec (assumes square pixels)
+    rad : int
+        aperture radius in arcsec
+    offsets : tuple of float
+        tuple containing additional offsets from aperture center (xc, yc) in arcsec (Default: (0,0))
+
 
     Returns
     -------
-    weight : fractional weight array (same shape as x and y)
+    weight : array_like
+        fractional weight array (same shape as x and y)
     """
     
+    (x,y) = xy
+    (xc,yc) = offsets
     
     weight = np.zeros_like(x, dtype=float)
 
@@ -553,7 +561,7 @@ def _extract_aperture(r, pixco=None, useapprox=False):
                 mask[ix] = 1
             else:
                 
-                weight = _aperture(xx, yy, 0, 0, r["cdelt"][1] * 3600, rad)
+                weight = _aperture((xx, yy), r["cdelt"][1] * 3600, rad, offsets=(0,0))
                 sw = weight / np.nansum(weight)
                 mask = weight
 
