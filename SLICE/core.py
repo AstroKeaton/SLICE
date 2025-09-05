@@ -852,7 +852,7 @@ def _fitLines(wv, spec, peaks, spec_unit):
 
     return q, ymodel, smo, flux_unit.to_string('console')
 
-def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1, ext=1, verbose=False):
+def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1, ext=1, verbose=False, savefig=True):
     '''
     meant to plot and mark peaks from a spectrum.
     creates catalog of significant peaks for a spectrum
@@ -888,6 +888,8 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1, ext=1, verbose=
         Extension of the FITS file containing the data and corresponding header. (Default: 1)
     verbose : bool
         Print list of peaks to logger (True) or not (False) (Default: False)
+    savefig : bool
+        Whether to save the figure to a file (True) or not (False) (Default: True)
 
     Returns
     -------
@@ -966,22 +968,23 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1, ext=1, verbose=
         np_detected += len(p)
         pp.extend(p)
 
-        # plotting
-        plt.figure(1)
-        plt.clf()
-        plt.plot(xx, yy)
-        plt.yscale("log")
-        ax = plt.axis()
-        for j, (loc, amp) in enumerate(p):
-            nearest = np.argmin(np.abs(loc - xx))
-            label_y = yy[nearest] * 0.99
-            plt.plot([loc, loc], [10**np.floor(np.log10(min(yy))), max(yy)], "r-.")
-            plt.text(loc, label_y, str(onp + j), ha="center", va="top", fontsize=14)
-        plt.axis([xx[0], xx[-1], ax[2], ax[3]])
-        plt.xlabel("Wavelength (um)")
-        plt.ylabel(f"Flux ({spec_unit})")
-        plt.savefig(f"{outname}-chunk{i+1}.png" if nchunk > 1 else f"{outname}.png")
-        plt.close()
+        if savefig == True:
+            # plotting
+            plt.figure(1)
+            plt.clf()
+            plt.plot(xx, yy)
+            plt.yscale("log")
+            ax = plt.axis()
+            for j, (loc, amp) in enumerate(p):
+                nearest = np.argmin(np.abs(loc - xx))
+                label_y = yy[nearest] * 0.99
+                plt.plot([loc, loc], [10**np.floor(np.log10(min(yy))), max(yy)], "r-.")
+                plt.text(loc, label_y, str(onp + j), ha="center", va="top", fontsize=14)
+            plt.axis([xx[0], xx[-1], ax[2], ax[3]])
+            plt.xlabel("Wavelength (um)")
+            plt.ylabel(f"Flux ({spec_unit})")
+            plt.savefig(f"{outname}-chunk{i+1}.png" if nchunk > 1 else f"{outname}.png")
+            plt.close()
 
         # Print peaks
         if verbose == True:
