@@ -2,7 +2,7 @@
 Code originally written in MATLAB by: A. Bolatto
 
 Adapted and modified for use in Python by: K. Donaghue
-Last modified: 9/1/2025
+Last modified: 9/4/2025 by R. Levy
 
 This code is best applied to JWST or similar IR data
 
@@ -35,39 +35,123 @@ Primary functions:
 
 
 import numpy as np
-import re
 from typing import List, Dict, Any
+import logging
+from logging import config
 
-########Helper functions for catPeaks##################################
-def _normalize_cube_to_yxspec(data, wcs1, wcs2, spec_len):
-    """
-    Reorder a data cube so it is (ny, nx, nspec), matching wcs1/wcs2 shapes.
-    This is how later code assumes the shape
-    """
-    import numpy as np
-    ny, nx = wcs1.shape
-    shape = data.shape
 
-    # pick spectral axis by length match; fallback to the largest axis
-    cand = [i for i, s in enumerate(shape) if s == spec_len]
-    spec_axis = cand[0] if cand else int(np.argmax(shape))
+########################################################
+########Set up logging##################################
+def _logging_setup():
+    ''' Set up logs with python's logging module. 
+    Checks for user-defined logger configuration file named "logger.conf" in the current working directory.
+    Otherwise, sends ERROR+ to terminal and INFO+ to log_file. Log files will be saved in the cwd/SLICE_logs/ and are named as "SLICE_YYYY-MM-DD.log" in UTC. Executions run on the same date will be appended to the end of the (existing) file.
+    
+    Returns
+    -------
+    logger : object
+        root level logger object
+    '''
+    import os
+    import datetime
 
-    # move spectral axis to last
-    cube = np.moveaxis(data, spec_axis, -1)  # -> (*spatial*, nspec)
+    #check if a user-defined logeer config file exists
+    if os.path.isfile("logger.conf"):
+        config.fileConfig("logger.conf")
+        user_config = True
 
-    # ensure spatial order matches WCS (ny, nx)
-    if cube.shape[:2] == (ny, nx):
-        return cube
-    elif cube.shape[:2] == (nx, ny):
-        return cube.transpose(1, 0, 2)       # swap x/y
+    else: #use default
+        user_config = False
+        log_file_path = "SLICE_logs/"
+        if os.path.isdir(log_file_path) == False:
+            os.system("mkdir "+log_file_path)
+        today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+        log_file = log_file_path+"SLICE_"+today+".log"
+        if os.path.isfile(log_file) == True:
+            fmode = 'a'
+        else:
+            fmode = 'w'
+
+        log_config = {
+            "version":1,
+            "root":{
+                "handlers" : ["console", "file"],
+                "level": "DEBUG"
+            },
+            "handlers":{
+                "console":{
+                    "formatter": "basicFormatter",
+                    "class": "logging.StreamHandler",
+                    "level": "ERROR"
+                },
+                "file":{
+                    "formatter":"basicFormatter",
+                    "class":"logging.FileHandler",
+                    "level":"INFO",
+                    "filename":log_file,
+                    "mode":fmode
+                }
+            },
+            "formatters":{
+                "basicFormatter": {
+                    "format": "%(levelname)s : %(module)s : %(funcName)s : %(message)s",
+                }
+            },
+        }       
+
+        #save default config to a file
+        with open(log_file_path+"default_logger.conf","w") as fp:
+            print(log_config,file=fp)
+
+        config.dictConfig(log_config)
+
+    #pass items from python warnings to logging instead
+    logging.captureWarnings(True)
+
+    logger = logging.getLogger(__name__)
+
+    #print date and time of script execution to log file
+    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d_%H:%M:%S")
+    logger.info("\n\n%s\nExecuted from script in %s/ on %s at %s UTC\n%s\n\n"
+        %("#"*42,os.path.abspath(os.getcwd()),now.split("_")[0],now.split("_")[1],"#"*42))
+
+    if user_config == True:
+        logger.info("Using logger configuration from %s/logger.conf." %os.path.abspath(os.getcwd()))
     else:
-        raise ValueError(
-            f"Spatial dims {cube.shape[:2]} don't match WCS {wcs1.shape}."
-        )
+        logger.info("Using default logger configuration, which has been saved in %s." %(log_file_path+"default_logger.conf"))
+
+    return logger
+logger = _logging_setup()
 
 
+#######################################################################
+########Helper functions for catPeaks##################################
+def _normalize_cube_to_yxspec(r):
+    """
+    Reorder a data cube so it is (ny, nx, nspec), matching wcs1/wcs2 shapes; this shape is assumed by other functions.
 
-def gaussmfit(x, y, K, S, X0, tol=1e-7, max_iter=200, lambda_init=1e-3, verbose=False):
+    Parameters
+    ----------
+    r : dict
+        Dictionary containing data cube values, header, WCS info, etc from rfits
+
+    Returns
+    -------
+    cube : ndarray
+        Data with order (ny, nx, nspec)
+    """
+    
+
+    wcs = r["wcs"]
+    cube = r["data"]
+    ns, ny, nx = wcs.array_shape #wcs stores this as ns, ny, nx
+    shape = list(cube.shape)
+    idx = [[ny, nx, ns].index(dim) for dim in shape]
+    cube = np.moveaxis(data,[0,1,2],idx)
+
+    return cube
+
+def _gaussmfit(x, y, K, S, X0, tol=1e-7, max_iter=200, lambda_init=1e-3, verbose=False):
     """
     Fit one or more Gaussian functions to data using Levenberg–Marquardt optimization.
     
@@ -88,7 +172,7 @@ def gaussmfit(x, y, K, S, X0, tol=1e-7, max_iter=200, lambda_init=1e-3, verbose=
     lambda_init : float, optional
         Initial damping parameter for LM algorithm.
     verbose : bool, optional
-        Print iteration details if True.
+        logger.error iteration details if True.
     
     Returns
     -------
@@ -104,7 +188,7 @@ def gaussmfit(x, y, K, S, X0, tol=1e-7, max_iter=200, lambda_init=1e-3, verbose=
         1-sigma uncertainties of fitted parameters.
     """
     
-    import numpy as np
+    
     from numpy.linalg import solve, inv
     
     # Convert inputs
@@ -172,7 +256,7 @@ def gaussmfit(x, y, K, S, X0, tol=1e-7, max_iter=200, lambda_init=1e-3, verbose=
         if newchi2 < chi2:  # Accept step
             converge_val = (chi2 - newchi2) / newchi2
             if verbose:
-                print(f"Iter {it:3d} | chi2={newchi2:.4e} | Δχ²/χ²={converge_val:.2e} | L={L:.2e}")
+                logger.info(f"Iter {it:3d} | chi2={newchi2:.4e} | Δχ²/χ²={converge_val:.2e} | L={L:.2e}")
             if converge_val < tol:
                 break  # Converged
             L /= 10
@@ -197,27 +281,25 @@ def gaussmfit(x, y, K, S, X0, tol=1e-7, max_iter=200, lambda_init=1e-3, verbose=
 
     return K, S, X0, chi2, ymodel, err_code, epar
 
-
-
-def sex2dec(sexstr):
+def _sex2dec(sexstr):
     """
     Convert sexagesimal string to decimal degrees.
 
-    Parameters:
-    ------------
+    Parameters
+    ----------
     sexstr : str
         assumes form of 'HH:MM:SS.S' or '±DD:MM:SS.S'
 
-    Returns:
-    ---------
+    Returns
+    -------
     float : value in decimal degrees
     """
     if isinstance(sexstr, str):
-        parts = sexstr.strip().split(':')
+        parts = sexstr.strip().split(":")
         if len(parts) != 3:
             raise ValueError(f"Invalid sexagesimal string: {sexstr}")
 
-        sign = -1 if sexstr.strip().startswith('-') else 1
+        sign = -1 if sexstr.strip().startswith("-") else 1
         h_or_d = abs(float(parts[0]))
         m = float(parts[1])
         s = float(parts[2])
@@ -226,55 +308,50 @@ def sex2dec(sexstr):
     else:
         raise TypeError("Input must be a string in 'HH:MM:SS' format")
 
-def rfits(file, option=None, bval=np.nan):
+def _rfits(file, ext=1, option=None, bval=np.nan):
     """
     Fits reader for acquiring necessary data for catPeaks.
     
     Parameters
-    -----------
-    file : (str) 
+    ----------
+    file : str 
         Path to FITS file.
-    option: (str or None) 
-        Optional keywords (e.g. 'head', 'nowcs', 'noabs', 'xten1', etc.).
-    bval : (float)
-        Value to use for blank pixels. Default is nan.
+    ext : int
+        Extension of the FITS file containing the data and corresponding header. (Default: 1)
+    option: str or None 
+        Optional keywords (e.g. "head", "nowcs", "noabs", etc.).
+    bval : float
+        Value to use for blank pixels. Default is np.nan.
     
-    Returns:
-    --------
-    dict: containing data, header, axes, and WCS info.
+    Returns
+    -------
+    result : dict
+        dictionary containing data, header, axes, and WCS info.
     """
     from astropy.io import fits
     from astropy.wcs import WCS
-    import numpy as np
     
-    header_only = 'head' in option if isinstance(option, str) else False
-    nowcs = 'nowcs' in option if isinstance(option, str) else False
-    noabs = 'noabs' in option if isinstance(option, str) else False
-    verbose = 'verbose' in option if isinstance(option, str) else False
-    extension = 0
-
-    # Handle extension (e.g. 'xten1' → extension 1)
-    if isinstance(option, str) and 'xten' in option:
-        try:
-            extension = int(option[option.find('xten') + 4])
-        except Exception:
-            extension = 0
+    
+    header_only = "head" in option if isinstance(option, str) else False
+    nowcs = "nowcs" in option if isinstance(option, str) else False
+    noabs = "noabs" in option if isinstance(option, str) else False
+    verbose = "verbose" in option if isinstance(option, str) else False
 
     with fits.open(file, memmap=True) as hdul:
-        hdu = hdul[extension]
+        hdu = hdul[ext]
         header = hdu.header
 
         if header_only:
-            return {'header': header}
+            return {"header": header}
 
         data = hdu.data.astype(float)  # ensure float for blank handling
-        if 'BLANK' in header:
-            blankval = header['BLANK']
+        if "BLANK" in header:
+            blankval = header["BLANK"]
             data[data == blankval] = bval
 
         # Scale if needed
-        bscale = header.get('BSCALE', 1.0)
-        bzero = header.get('BZERO', 0.0)
+        bscale = header.get("BSCALE", 1.0)
+        bzero = header.get("BZERO", 0.0)
         data = bscale * data + bzero
 
         # Extract WCS
@@ -287,33 +364,33 @@ def rfits(file, option=None, bval=np.nan):
             wcs = None
 
         # Create axes
-        naxis = header.get('NAXIS', 0)
+        naxis = header.get("NAXIS", 0)
         axes = []
         for i in range(naxis):
-            axis_len = header.get(f'NAXIS{i+1}', 1)
-            crval = header.get(f'CRVAL{i+1}', 0.0)
-            cdelt = header.get(f'CDELT{i+1}', 1.0)
-            crpix = header.get(f'CRPIX{i+1}', 1.0)
+            axis_len = header.get(f"NAXIS{i+1}", 1)
+            crval = header.get(f"CRVAL{i+1}", 0.0)
+            cdelt = header.get(f"CDELT{i+1}", 1.0)
+            crpix = header.get(f"CRPIX{i+1}", 1.0)
             axis = (np.arange(axis_len) + 1 - crpix) * cdelt
             if not noabs:
                 axis += crval
             axes.append(axis)
 
         result = {
-            'header': header,
-            'data': data,
-            'x': axes,
-            'bunit': header.get('BUNIT', ''),
-            'naxis': naxis,
-            'bitpix': header.get('BITPIX', None),
-            'numpt': [header.get(f'NAXIS{i+1}', 0) for i in range(naxis)],
-            'crval': [header.get(f'CRVAL{i+1}', 0.0) for i in range(naxis)],
-            'crpix': [header.get(f'CRPIX{i+1}', 1.0) for i in range(naxis)],
-            'cdelt': [header.get(f'CDELT{i+1}', 1.0) for i in range(naxis)],
-            'cunit': [header.get(f'CUNIT{i+1}', '') for i in range(naxis)],
-            'ctype': [header.get(f'CTYPE{i+1}', '') for i in range(naxis)],
-            'wcs': wcs,
-            'coormode': 'ABSCOOR' if not noabs else 'RELCOOR',
+            "header": header,
+            "data": data,
+            "x": axes,
+            "bunit": header.get("BUNIT", ""),
+            "naxis": naxis,
+            "bitpix": header.get("BITPIX", None),
+            "numpt": [header.get(f"NAXIS{i+1}", 0) for i in range(naxis)],
+            "crval": [header.get(f"CRVAL{i+1}", 0.0) for i in range(naxis)],
+            "crpix": [header.get(f"CRPIX{i+1}", 1.0) for i in range(naxis)],
+            "cdelt": [header.get(f"CDELT{i+1}", 1.0) for i in range(naxis)],
+            "cunit": [header.get(f"CUNIT{i+1}", "") for i in range(naxis)],
+            "ctype": [header.get(f"CTYPE{i+1}", "") for i in range(naxis)],
+            "wcs": wcs,
+            "coormode": "ABSCOOR" if not noabs else "RELCOOR",
         }
 
         # Optional WCS coordinate arrays
@@ -323,34 +400,40 @@ def rfits(file, option=None, bval=np.nan):
             try:
                 ra, dec = wcs.celestial.pixel_to_world(xx, yy).ra.deg, \
                           wcs.celestial.pixel_to_world(xx, yy).dec.deg
-                result['wcs1'] = ra
-                result['wcs2'] = dec
+                result["wcs1"] = ra
+                result["wcs2"] = dec
             except Exception as e:
-                print(f"WCS conversion failed: {e}")
+                logger.error(f"WCS conversion failed: {e}")
 
         return result
-    
-    
 
-
-
-def aperture(x, y, xc, yc, psize, rad):
+def _aperture(xy, psize, rad, offsets = (0.,0.)):
     """
     Compute the fractional contribution of each square pixel (of size psize)
-    in an image to a circular aperture centered on (xc, yc) of radius rad.
+    in an image to a circular aperture of radius rad.
     
-    function is used in extract_aperture
+    function is used in _extract_aperture
     
-    Parameters:
-    x, y   : arrays of pixel center coordinates (same shape)
-    xc, yc : coordinates of the circular aperture center
-    psize  : pixel size (assumes square pixels)
-    rad    : aperture radius
+    Parameters
+    ----------
+    xy : tuple of array_like
+        tuple of 2D arrays (x, y) containing offsets of pixel center coordinates from aperture center in arcsec, x and y must have the same shape
+    psize : int
+        pixel size in arcsec (assumes square pixels)
+    rad : int
+        aperture radius in arcsec
+    offsets : tuple of float
+        tuple containing additional offsets from aperture center (xc, yc) in arcsec (Default: (0,0))
 
-    Returns:
-    weight : fractional weight array (same shape as x and y)
+
+    Returns
+    -------
+    weight : array_like
+        fractional weight array (same shape as x and y)
     """
-    import numpy as np
+    
+    (x,y) = xy
+    (xc,yc) = offsets
     
     weight = np.zeros_like(x, dtype=float)
 
@@ -385,38 +468,44 @@ def aperture(x, y, xc, yc, psize, rad):
 
     return weight.reshape(x.shape)
 
-
-def extract_aperture(r, pixco, useapprox=False, silent=False):
+def _extract_aperture(r, pixco=None, useapprox=False):
     """
     Extract a spectrum using an aperture on the FITS data cube.
     
     function is used for catPeaks
     
-    Parameters:
-    - r: dictionary containing FITS data and WCS (from rfits)
-    - pixco: pixel coordinates, list of coordinates, or circular region spec
-    - useapprox: if True, uses crude radial cutoff instead of accurate fractional aperture
-    - silent: if True, suppresses warnings
+    Parameters
+    ----------
+    r: dict
+        dictionary containing FITS data and WCS (from _rfits)
+    pixco: list or None
+        pixel coordinates (e.g., [x,y]; region="pixel"), list of coordinates (e.g., [[x1,x2],[y1,y2]], region="list"), circular region (e.g., [ra, dec, radius], region="circle"), or None (coadd whole cube; region="all") (Default: None)
+    useapprox: bool
+        if True, uses crude radial cutoff instead of accurate fractional aperture (Default: False)
 
-    Returns:
-    - s: extracted 1D spectrum
-    - region: string identifier for aperture type
-    - mask: 2D mask of used pixels
-    - flag: status flag (0 = OK, -1 = outside cube, -2 = too many NaNs)
+    Returns
+    -------
+    s : array_like
+        extracted 1D spectrum
+    region : str
+        string identifier for aperture type, see pixco
+    mask : array_like
+        2D mask of used pixels
+    flag : int or None
+        status flag (0 = OK, -1 = outside cube, -2 = too many NaNs, None = Error)
     """
-    import numpy as np
+    
     from numpy import cos, deg2rad
     from astropy.wcs.utils import skycoord_to_pixel
     from astropy.coordinates import SkyCoord
-    import warnings
     
     flag = 0
     data = r["data"]
     shape = data.shape
     
     # Reorder cube to (ny, nx, nspec) so data[:, :, k] is a spatial plane
-    if ("wcs1" in r) and ("wcs2" in r) and ("x" in r) and (len(r["x"]) >= 3):
-        data = _normalize_cube_to_yxspec(data, r["wcs1"], r["wcs2"], len(r["x"][2]))
+    if ("wcs" in r):
+        data = _normalize_cube_to_yxspec(r)
         shape = data.shape
     else:
         # fallback: assume last axis is spectral
@@ -425,94 +514,98 @@ def extract_aperture(r, pixco, useapprox=False, silent=False):
     
     mask = np.zeros(shape[:2], dtype=float)
 
-    # Handle 'pixel' case
     pixco = np.array(pixco)
-    if pixco.ndim == 1 and pixco.shape[0] == 2:
-        region = 'pixel'
-        s = data[pixco[0], pixco[1], :]
-        mask[pixco[0], pixco[1]] = 1
+    pixco_len = len(pixco.shape)
 
-    # Handle 'list' case
-    elif pixco.shape[0] == 2 and pixco.shape[1] > 1:
-        region = 'list'
-        s = np.nanmedian(data[pixco[0], pixco[1], :], axis=(0,))
-        mask[pixco[0], pixco[1]] = 1
-
-    # Handle 'all' case
-    elif pixco.size == 1:
-        region = 'all'
-        s = np.nanmedian(data, axis=(0, 1))
+    # Handle "all" case (None)
+    if pixco_len == 0:
+        region = "all"
+        s = np.nansum(data, axis=(0, 1))
         mask[:] = 1
+ 
+    # Handle "list" case ([[x1,x2],[y1,y2]])
+    elif pixco_len == 2:
+        region = "list"
+        s = np.nansum(data[pixco[0], pixco[1], :], axis=(0,))
+        mask[pixco[0], pixco[1]] = 1
 
-    # Handle 'circle' case
-    elif pixco.shape == (3,) or len(pixco) == 3:
-        region = 'circle'
-        if isinstance(pixco[0], str):
-            rac = sex2dec(pixco[0]) * 15
-            dec = sex2dec(pixco[1])
-            rad = pixco[2]
-        elif isinstance(pixco[0], (int, float)):
-            rac, dec, rad = pixco
-        else:
-            raise ValueError("Format should be ['00:00:00.0','00:00:00.0', 0.0] or [0.0, 0.0, 0.0]")
+    elif pixco_len == 1:
+ 
+        # Handle "pixel" case ([x,y])
+        if len(pixco) == 2:
+            region = "pixel"
+            s = data[pixco[0], pixco[1], :]
+            mask[pixco[0], pixco[1]] = 1
 
-        wcs1 = r["wcs1"]
-        wcs2 = r["wcs2"]
-
-        xx = (wcs1 - rac) * np.cos(np.deg2rad(r["crval"][1])) * 3600
-        yy = (wcs2 - dec) * 3600
-
-        if useapprox:
-            dist = np.sqrt(xx**2 + yy**2)
-            ix = np.where(dist <= rad)
-        else:
-            
-            weight = aperture(xx, yy, 0, 0, r["cdelt"][1] * 3600, rad)
-            sw = weight / np.nansum(weight)
-
-        s = np.zeros(shape[2])
-        ck = np.zeros(shape[2])
-        for k in range(shape[2]):
-            if useapprox:
-                p = data[:, :, k]
-                s[k] = np.nanmean(p[ix])
+        # Handle "circle" case ([ra, dec, radius])
+        elif len(pixco) == 3:
+            region = "circle"
+            if isinstance(pixco[0], str):
+                rac = _sex2dec(pixco[0]) * 15
+                dec = _sex2dec(pixco[1])
+                rad = pixco[2]
+            elif isinstance(pixco[0], (int, float)):
+                rac, dec, rad = pixco
             else:
-                p = data[:, :, k] * sw
-                pck = np.ones_like(p)
-                pck[np.isnan(p)] = np.nan
-                pck *= sw
-                ck[k] = np.nansum(pck)
-                s[k] = np.nansum(p)
-                if s[k] == 0:
-                    s[k] = np.nan
-                if ck[k] < 0.25:
-                    s[k] = np.nan
+                raise ValueError("Format should be ['00:00:00.0','00:00:00.0', 0.0] or [0.0, 0.0, 0.0]")
+
+            wcs1 = r["wcs1"]
+            wcs2 = r["wcs2"]
+
+            xx = (wcs1 - rac) * np.cos(np.deg2rad(r["crval"][1])) * 3600
+            yy = (wcs2 - dec) * 3600
+
+            if useapprox:
+                dist = np.sqrt(xx**2 + yy**2)
+                ix = np.where(dist <= rad)
+                mask[ix] = 1
+            else:
+                
+                weight = _aperture((xx, yy), r["cdelt"][1] * 3600, rad, offsets=(0,0))
+                sw = weight / np.nansum(weight)
+                mask = weight
+
+            s = np.zeros(shape[2])
+            ck = np.zeros(shape[2])
+            for k in range(shape[2]):
+                if useapprox:
+                    p = data[:, :, k]
+                    s[k] = np.nanmean(p[ix])
                 else:
-                    s[k] = s[k] / ck[k]
+                    p = data[:, :, k] * sw
+                    pck = np.ones_like(p)
+                    pck[np.isnan(p)] = np.nan
+                    pck *= sw
+                    ck[k] = np.nansum(pck)
+                    s[k] = np.nansum(p)
+                    if s[k] == 0:
+                        s[k] = np.nan
+                    if ck[k] < 0.25:
+                        s[k] = np.nan
+                    else:
+                        s[k] = s[k] / ck[k]
 
-        if np.all(np.isnan(s)):
-            flag = -1
-            if not silent:
-                warnings.warn("Aperture is empty (probably outside the cube)")
-            return s, region, mask, flag
-        if np.sum(np.isnan(s)) / len(s) > 0.05:
-            flag = -2
-            if not silent:
-                warnings.warn("A lot of NaNs in the spectrum (close to an edge)")
-            return s, region, mask, flag
 
-        if useapprox:
-            mask[ix] = 1
+            if np.all(np.isnan(s)):
+                flag = -1
+                logger.warn("Aperture is empty (probably outside the cube)")
+
+            if np.sum(np.isnan(s)) / len(s) > 0.05:
+                flag = -2
+                logger.warn("A lot of NaNs in the spectrum (close to an edge)")
+
         else:
-            mask = weight
+            raise RuntimeError("Invalid pixco format.")
 
     else:
-        raise NotImplementedError("Averaging dimensions not implemented")
+        logger.warn("Likely invalid pixco format")
+        raise NotImplementedError("Averaging dimensions not implemented")        
+
+    logger.info("Flag = %i" %flag)
 
     return s, region, mask, flag
 
-
-def sigChans(xx, yy, noise, snr, thr):
+def _sigChans(xx, yy, noise, snr, thr):
     """
     Detect significant peaks in a sample series.
     
@@ -532,10 +625,10 @@ def sigChans(xx, yy, noise, snr, thr):
         minimum separation (in samples) between peaks
 
     Returns
-    ------------
+    -------
     pp: Nx2 numpy array of peak positions and their amplitudes
     """
-    import numpy as np
+    
     from scipy.signal import find_peaks
     
     pp = np.zeros((1000, 2))  # preallocate
@@ -610,10 +703,7 @@ def sigChans(xx, yy, noise, snr, thr):
 
     return pp[:npk]
 
-
-
-
-def fitLines(wv, spec, peaks):
+def _fitLines(wv, spec, peaks, spec_unit):
     '''
     Goes through peak list and fits gaussians to them
     removes continuum. produces array with the gaussian
@@ -621,11 +711,37 @@ def fitLines(wv, spec, peaks):
     with the continuum
     
     function is used in catpeaks
+
+    Parameters
+    ----------
+    wv : array_like
+        1D array of wavelengths in microns
+    spec : array_like
+        1D array of fluxes at each wavelength with unit spec_unit
+    peaks : array_like
+        2D array of peak locations and amplitudes from _sigChans
+    spec_unit : str
+        Unit of spectral data
+
+    Returns
+    -------
+    q : dict
+        Dictionary of fitted parameters for each line
+    ymodel : array_like
+        The model spectrum based on the identified and fitted line
+    smo : array_like
+        A smoothed version of the spectrum
+    flux_unit : str
+        The unit for the computed flux of the Gaussian fit, either W m^-2 or W m^-2 sr^-1 depending if spec_unit is per solid angle or not.
+
     '''
     
-    import numpy as np
+    
     from scipy.signal import firwin, filtfilt
     from scipy.interpolate import interp1d
+    import astropy.units as u
+
+    spec_unit = u.Unit(spec_unit)
     
     c = 3e8  # speed of light (m/s)
     peaklist = peaks[:, 0]
@@ -636,15 +752,15 @@ def fitLines(wv, spec, peaks):
     nl = len(peaklist)
 
     q = {
-        'K': np.full(nl, np.nan),
-        'S': np.full(nl, np.nan),
-        'X0': np.full(nl, np.nan),
-        'area': np.full(nl, np.nan),
-        'eK': np.full(nl, np.nan),
-        'eS': np.full(nl, np.nan),
-        'eX0': np.full(nl, np.nan),
-        'earea': np.full(nl, np.nan),
-        'flag': -np.ones(nl, dtype=int)
+        "K": np.full(nl, np.nan),
+        "S": np.full(nl, np.nan),
+        "X0": np.full(nl, np.nan),
+        "area": np.full(nl, np.nan),
+        "eK": np.full(nl, np.nan),
+        "eS": np.full(nl, np.nan),
+        "eX0": np.full(nl, np.nan),
+        "earea": np.full(nl, np.nan),
+        "flag": -np.ones(nl, dtype=int)
     }
 
     # Dynamic mask width
@@ -661,7 +777,7 @@ def fitLines(wv, spec, peaks):
             cont[j].append(i)
 
     include = include[mask == 0]
-    base_interp = interp1d(wv[include], spec[include], kind='linear', fill_value="extrapolate")
+    base_interp = interp1d(wv[include], spec[include], kind="linear", fill_value="extrapolate")
     base = base_interp(wv)
     base[np.isnan(base)] = spec[np.isnan(base)]
 
@@ -697,49 +813,57 @@ def fitLines(wv, spec, peaks):
         if len(contrib) > 1:
             S /= 2
 
-        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, 1e-7)
+        Ko, So, X0o, chi2, yz, err, epar = _gaussmfit(wvreg, spreg, K, S, X0, 1e-7)
 
         ix_self = np.where(contrib == i)[0][0]
-        q['K'][i] = Ko[ix_self]
-        q['eK'][i] = epar[ix_self * 3]
-        q['S'][i] = So[ix_self]
-        q['eS'][i] = epar[ix_self * 3 + 1]
-        q['X0'][i] = X0o[ix_self]
-        q['eX0'][i] = epar[ix_self * 3 + 2]
+        q["K"][i] = Ko[ix_self]
+        q["eK"][i] = epar[ix_self * 3]
+        q["S"][i] = So[ix_self]
+        q["eS"][i] = epar[ix_self * 3 + 1]
+        q["X0"][i] = X0o[ix_self]
+        q["eX0"][i] = epar[ix_self * 3 + 2]
 
-        nu = c / (1e-6 * q['X0'][i])
-        dnu = nu * q['S'][i] / q['X0'][i]
+        nu = c / (1e-6 * q["X0"][i])
+        dnu = nu * q["S"][i] / q["X0"][i]
         ednu = np.sqrt(
-            (q['S'][i]**2 / q['X0'][i]**4) * q['eS'][i]**2 +
-            (4 * q['S'][i]**2 / q['X0'][i]**6) * q['eX0'][i]**2
+            (q["S"][i]**2 / q["X0"][i]**4) * q["eS"][i]**2 +
+            (4 * q["S"][i]**2 / q["X0"][i]**6) * q["eX0"][i]**2
         )
 
-        q['area'][i] = 1e-20 * np.sqrt(2 * np.pi) * q['K'][i] * dnu
-        q['earea'][i] = 1e-20 * np.sqrt(2 * np.pi) * np.sqrt(
-            dnu**2 * q['eK'][i]**2 + q['K'][i]**2 * ednu**2
-        )
+        #find total flux under Gaussian, convert to W/m2/sr
+        flux = np.sqrt(2 * np.pi) * q["K"][i]*spec_unit * dnu*u.Hz
+        eflux = np.sqrt(2 * np.pi) * np.sqrt((dnu*u.Hz)**2 * (q["eK"][i]*spec_unit)**2 + (q["K"][i]*spec_unit)**2 * (ednu*u.Hz)**2)
+        if ("sr^-1" in spec_unit.to_string()) or ("arcsec^-2" in spec_unit.to_string()) or ("deg^-2" in spec_unit.to_string()):
+            flux_unit = u.W/u.m**2/u.sr
+        else:
+            flux_unit = u.W/u.m**2
+        q["area"][i] = flux.to(flux_unit).value
+        q["earea"][i] = eflux.to(flux_unit).value
 
-        q['flag'][i] = err
+        q["flag"][i] = err
         if abs(X0o[ix_self] - X0[ix_self]) > 2 * np.mean(np.diff(wvreg)):
-            q['flag'][i] += 8
-        if q['K'][i] < 0:
-            q['flag'][i] += 16
+            q["flag"][i] += 8
+        if q["K"][i] < 0:
+            q["flag"][i] += 16
         if np.sqrt(chi2) > 3 * rms:
-            q['flag'][i] += 32
+            q["flag"][i] += 32
 
-        ymodel += q['K'][i] * np.exp(-((wv - q['X0'][i]) / (np.sqrt(2) * q['S'][i]))**2)
+        ymodel += q["K"][i] * np.exp(-((wv - q["X0"][i]) / (np.sqrt(2) * q["S"][i]))**2)
 
-    return q, ymodel, smo
+    return q, ymodel, smo, flux_unit.to_string('console')
 
-
-
-def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1):
+def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1, ext=1, verbose=False, savefig=True):
     '''
     meant to plot and mark peaks from a spectrum.
     creates catalog of significant peaks for a spectrum
+        .txt file containing peak information
+        .txt file containing the extracted spectra
+        .txt file containing the continuum of region
+        .tex file containing the model of the spectra
+        .png plot of spectra with peaks marked and labeled
     
-    Parameters:
-    ---------------
+    Parameters
+    ----------
     fname : str 
         Name of input file. Typically fits file.
     outname : str 
@@ -760,23 +884,30 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1):
         The number of chunks to cut the spectrum into, it defaults to 1. 
         If it is a vector the first and second component will be the start-end
         wavelengths (um) of the analysis.
-    
+    ext : int
+        Extension of the FITS file containing the data and corresponding header. (Default: 1)
+    verbose : bool
+        Print list of peaks to logger (True) or not (False) (Default: False)
+    savefig : bool
+        Whether to save the figure to a file (True) or not (False) (Default: True)
+
+    Returns
     -------
-    Returns: .txt file containing peak information
-             .txt file containing the extracted spectra
-             .txt file containing the continuum of region
-             .tex file containing the model of the spectra
-             .png plot of spectra with peaks marked and labeled
+    q_result : dict
+        Dictionary of line fit parameters
     '''
-    import numpy as np
+    
     import matplotlib.pyplot as plt
     
     # Handle input
     if isinstance(fname, str):
         #assumes fits cube has additional extension where data is housed
-        r = rfits(fname, 'xten1')  
+        r = _rfits(fname, ext=ext)
+        cube_file_name = fname  
     else:
         r = fname
+        cube_file_name = "None"
+    spec_unit = r["bunit"]
 
     mloop = False
     if thr < 0:
@@ -791,11 +922,11 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1):
 
     snr = snr / 1.5  # MAD conversion
 
-    s, region, mask, flag = extract_aperture(r, pixco)
+    s, region, mask, flag = _extract_aperture(r, pixco)
     if flag != 0:
-        return {'flag': flag}
+        return {"flag": flag}
 
-    x = np.array(r['x'][2])[~np.isnan(s)]
+    x = np.array(r["x"][2])[~np.isnan(s)]
     y = s[~np.isnan(s)]
 
     if isinstance(nchunk, (list, tuple, np.ndarray)) and len(nchunk) == 2:
@@ -813,8 +944,8 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1):
     mf = np.array([1, 1, 0, -1, -1])
     pp = []
     q_result = {
-        'S': [], 'K': [], 'X0': [], 'area': [],
-        'eK': [], 'eS': [], 'eX0': [], 'earea': [], 'flag': []
+        "S": [], "K": [], "X0": [], "area": [],
+        "eK": [], "eS": [], "eX0": [], "earea": [], "flag": []
     }
 
     for i in range(nchunk):
@@ -828,91 +959,94 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1):
         yy = y[st:en]
         dy = np.diff(yy)
         dx = (xx[1:] + xx[:-1]) / 2
-        cc = np.convolve(dy, -mf, mode='same')
+        cc = np.convolve(dy, -mf, mode="same")
         scc = np.median(np.abs(cc - np.median(cc))) / 0.6745  # MAD
 
-        p = sigChans(dx, cc, scc, snr, thr)
-        q, ymo, cont = fitLines(xx, yy, p)
+        p = _sigChans(dx, cc, scc, snr, thr)
+        q, ymo, cont, flux_unit = _fitLines(xx, yy, p, spec_unit)
 
         np_detected += len(p)
         pp.extend(p)
 
-        # plotting
-        plt.figure(1)
-        plt.clf()
-        plt.plot(xx, yy)
-        plt.yscale('log')
-        ax = plt.axis()
-        for j, (loc, amp) in enumerate(p):
-            nearest = np.argmin(np.abs(loc - xx))
-            label_y = yy[nearest] * 0.99
-            plt.plot([loc, loc], [10**np.floor(np.log10(min(yy))), max(yy)], 'r-.')
-            plt.text(loc, label_y, str(onp + j), ha='center', va='top', fontsize=14)
-        plt.axis([xx[0], xx[-1], ax[2], ax[3]])
-        plt.xlabel('Wavelength (um)')
-        plt.ylabel(f'Flux ({r["bunit"]})')
-        plt.savefig(f"{outname}-chunk{i+1}.png" if nchunk > 1 else f"{outname}.png")
+        if savefig == True:
+            # plotting
+            plt.figure(1)
+            plt.clf()
+            plt.plot(xx, yy)
+            plt.yscale("log")
+            ax = plt.axis()
+            for j, (loc, amp) in enumerate(p):
+                nearest = np.argmin(np.abs(loc - xx))
+                label_y = yy[nearest] * 0.99
+                plt.plot([loc, loc], [10**np.floor(np.log10(min(yy))), max(yy)], "r-.")
+                plt.text(loc, label_y, str(onp + j), ha="center", va="top", fontsize=14)
+            plt.axis([xx[0], xx[-1], ax[2], ax[3]])
+            plt.xlabel("Wavelength (um)")
+            plt.ylabel(f"Flux ({spec_unit})")
+            plt.savefig(f"{outname}-chunk{i+1}.png" if nchunk > 1 else f"{outname}.png")
+            plt.close()
 
         # Print peaks
-        for j, (loc, amp) in enumerate(p):
-            print(f"{onp + j:3d}   {loc:.4f} um {amp:8.4f} {r['bunit']}")
+        if verbose == True:
+            for j, (loc, amp) in enumerate(p):
+                logger.info(f"{onp + j:3d}   {loc:.4f} um {amp:8.4f} {r["bunit"]}")
         onp = np_detected + 1
 
         # Append fit info
-        for k in range(len(q['S'])):
+        for k in range(len(q["S"])):
             for key in q_result:
                 q_result[key].append(q[key][k])
 
     # Write output files
     s2f = np.sqrt(np.log(256))
-    with open(f'{outname}-peaklist.txt', 'w') as fp:
-        fp.write(f"%% Cube: {fname}\n")
-        fp.write(f"%% Region: {region}\n")
-        if region == 'pixel':
-            fp.write(f"pixel {pixco[0]}, {pixco[1]}\n")
-        elif region == 'list':
-            fp.write("list " + " ".join(map(str, pixco[0])) + "\n")
-            fp.write("%%              " + " ".join(map(str, pixco[1])) + "\n")
-        elif region == 'circle' and isinstance(pixco, list):
-            fp.write(f"circle {pixco[0]},{pixco[1]},{pixco[2]}\n")
+    with open(f"{outname}-peaklist.txt", "w") as fp:
+        fp.write(f"# Cube: {cube_file_name}\n")
+        fp.write(f"# Region: {region} ")
+        if region == "pixel":
+            fp.write(f": {pixco[0]}, {pixco[1]}\n")
+        elif region == "list":
+            fp.write(": [" + " ".join(map(str, pixco[0])) + ",")
+            fp.write(" ".join(map(str, pixco[1])) + "]\n")
+        elif region == "circle" and isinstance(pixco, list):
+            fp.write(f": {pixco[0]},{pixco[1]},{pixco[2]}\n")
         else:
-            fp.write("undefined\n")
+            fp.write("\n")
 
-        fp.write("%% num wave(um) peak(MJy/sr) GaussK(MJy/sr) GaussFWHM(um) GaussX(um) Flux(W/m2/sr) eGaussK eGaussS eGaussX eFlux flag\n")
+        fp.write(f"# num wave(um) peak({spec_unit}) GaussK({spec_unit}) GaussFWHM(um) GaussX(um) Flux({flux_unit}) eGaussK eGaussS eGaussX eFlux flag\n")
         for i in range(np_detected):
-            S_abs = abs(q_result['S'][i])
-            flux = q_result['area'][i]
-            eS = q_result['eS'][i] * s2f
-            fp.write(f"{i+1:3d} {pp[i][0]:8.4f} {pp[i][1]:12.4f} {q_result['K'][i]:12.4f} "
-                     f"{S_abs * s2f:8.4f} {q_result['X0'][i]:8.4f} {flux:8.4g} "
-                     f"{q_result['eK'][i]:8.4g} {eS:8.4g} {q_result['eX0'][i]:8.4g} "
-                     f"{q_result['earea'][i]:8.4g} {q_result['flag'][i]:2d}\n")
+            S_abs = abs(q_result["S"][i])
+            flux = q_result["area"][i]
+            eS = q_result["eS"][i] * s2f
+            fp.write(f"{i+1:3d} {pp[i][0]:8.4f} {pp[i][1]:12.4f} {q_result["K"][i]:12.4f} "
+                     f"{S_abs * s2f:8.4f} {q_result["X0"][i]:8.4f} {flux:8.4g} "
+                     f"{q_result["eK"][i]:8.4g} {eS:8.4g} {q_result["eX0"][i]:8.4g} "
+                     f"{q_result["earea"][i]:8.4g} {q_result["flag"][i]:2d}\n")
 
     # Spectrum output
-    np.savetxt(f'{outname}_spec.txt', np.column_stack((xx, yy)), header=f'{fname}')
-    np.savetxt(f'{outname}_cont.txt', np.column_stack((xx, cont)), header=f'{fname}')
-    np.savetxt(f'{outname}_model.txt', np.column_stack((xx, ymo)), header=f'{fname}')
+    for (ftype,ytype) in zip(['spec','cont','model'],[yy,cont,ymo]):
+        np.savetxt(f"{outname}_{ftype}.txt",
+                   np.column_stack((xx, ytype)),
+                   header=f"wave(um) flux({spec_unit})")
 
     return q_result
 
 ###################################################
 #########Commands to manipulate line list##########
-def recomputeLines(file):
+def _recomputeLines(file):
     """
     Will recompute the peak list, the continuum, and, model
         based on new spec list i.e. when lines are cut redo model
+        Saves edited lists in .txt format
 
     Parameters
     ----------
     file : str
         Base filename (without extension).
     
-    returns
-    -------
-    edited lists in .txt format
     """
-    import numpy as np
+    
     import os
+
     # --- Select peaklist file ---
     if os.path.exists(f"{file}-peaklist-ed.txt"):
         fname = f"{file}-peaklist-ed.txt"
@@ -928,7 +1062,7 @@ def recomputeLines(file):
             ln = fpr.readline()
             if not ln:
                 break
-            if ln.startswith("%"):
+            if ln.startswith("#"):
                 nh += 1
                 hl.append(ln.strip())
             else:
@@ -940,11 +1074,11 @@ def recomputeLines(file):
         for _ in range(nh):
             ln = fp.readline().strip()
         if "Gauss" in ln:
-            cols = np.loadtxt(fp, comments="%", ndmin=2)
+            cols = np.loadtxt(fp, comments="#", ndmin=2)
             # Expecting 12 columns
             C = [cols[:, i] for i in range(cols.shape[1])]
         else:
-            cols = np.loadtxt(fp, comments="%", ndmin=2)
+            cols = np.loadtxt(fp, comments="#", ndmin=2)
             # Expecting 3 columns
             C = [cols[:, i] for i in range(cols.shape[1])]
 
@@ -952,7 +1086,7 @@ def recomputeLines(file):
     u = np.loadtxt(f"{file}_spec.txt")
 
     # --- Fit lines ---
-    q, ymo, cont = fitLines(u[:, 0], u[:, 1], np.column_stack([C[1], C[2]]))
+    q, ymo, cont = _fitLines(u[:, 0], u[:, 1], np.column_stack([C[1], C[2]]))
 
     # --- Derived quantities ---
     s2f = np.sqrt(np.log(256))
@@ -972,15 +1106,15 @@ def recomputeLines(file):
         C[0].astype(int),     # ID
         C[1],                 # col2
         C[2],                 # col3
-        q['K'],
-        q['S'] * s2f,
-        q['X0'],
+        q["K"],
+        q["S"] * s2f,
+        q["X0"],
         area,
-        q['eK'],
-        q['eS'] * s2f,
-        q['eX0'],
+        q["eK"],
+        q["eS"] * s2f,
+        q["eX0"],
         earea,
-        q['flag'].astype(int)
+        q["flag"].astype(int)
     ])
 
     # --- Rewrite peaklist file ---
@@ -999,7 +1133,7 @@ def recomputeLines(file):
     hdr = []
     with open(contfile, "r") as fpr:
         for ln in fpr:
-            if ln.startswith("%"):
+            if ln.startswith("#"):
                 hdr.append(ln)
             else:
                 break
@@ -1013,7 +1147,7 @@ def recomputeLines(file):
     hdr = []
     with open(modelfile, "r") as fpr:
         for ln in fpr:
-            if ln.startswith("%"):
+            if ln.startswith("#"):
                 hdr.append(ln)
             else:
                 break
@@ -1023,8 +1157,6 @@ def recomputeLines(file):
             fpw.write(f"{x:8.5f}  {y:8.5e}\n")
             
     return
-
-
 
 def keepLines(file, wave_list, tol=0.05):
     """
@@ -1040,20 +1172,17 @@ def keepLines(file, wave_list, tol=0.05):
         Tolerance(s) in um around each wavelength.
         If scalar, applied to all. If array, must match wave_list.
     
-    returns
-    -------
-    peaklist with lines near specified wavelength(s).
     """
-    import numpy as np
+    
 
     fname = file + "-peaklist.txt"
 
     # --- Step 1: detect number of columns
     with open(fname, "r") as fp:
-        fp.readline()   # skip % Cube
-        fp.readline()   # skip % Region
+        fp.readline()   # skip # Cube
+        fp.readline()   # skip # Region
         ln = fp.readline()  # header with column names
-        header = [line for line in fp if line.startswith("%")]
+        header = [line for line in fp if line.startswith("#")]
     if "Gauss" in ln:
         ncols = 12
     else:
@@ -1062,8 +1191,7 @@ def keepLines(file, wave_list, tol=0.05):
     # --- Step 2: load numeric data
     cols = np.loadtxt(
         fname,
-        comments="%",
-        skiprows=3,
+        comments="#",
         usecols=range(ncols),
         
     )
@@ -1101,17 +1229,14 @@ def keepLines(file, wave_list, tol=0.05):
                 )
 
     
-    print(f'Written {outname}')
-    recomputeLines(file)
+    logger.info(f"Written {outname}")
+    _recomputeLines(file)
     return
-
-
-
 
 def cullLines(file, remove_list):
     """
     Remove specific line indices from a peaklist and force creation of
-    an '-ed' peaklist file.
+    an "-ed" peaklist file.
 
     Parameters
     ----------
@@ -1120,18 +1245,15 @@ def cullLines(file, remove_list):
     remove_list : array_like
         List of line indices to remove.
     
-    returns
-    -------
-    peaklist with specified lines removed
     """
-    import numpy as np
+    
 
     fname = file + "-peaklist.txt"
 
     # --- Step 1: detect number of columns
     with open(fname, "r") as fp:
-        fp.readline()   # skip % Cube
-        fp.readline()   # skip % Region
+        fp.readline()   # skip # Cube
+        fp.readline()   # skip # Region
         ln = fp.readline()  # header with column names
 
     if "Gauss" in ln:
@@ -1142,8 +1264,7 @@ def cullLines(file, remove_list):
     # --- Step 2: load numeric data
     cols = np.loadtxt(
         fname,
-        comments="%",
-        skiprows=3,
+        comments="#",
         usecols=range(ncols),
         unpack=True
     )
@@ -1155,23 +1276,20 @@ def cullLines(file, remove_list):
     # --- Step 4: write new file with same header lines
     outname = file + "-peaklist-ed.txt"
     with open(fname, "r") as fp:
-        header = [line for line in fp if line.startswith("%")]
+        header = [line for line in fp if line.startswith("#")]
 
     with open(outname, "w") as f:
         for line in header:
             f.write(line)
         np.savetxt(f, np.column_stack(cols), fmt="%-12.6g")
 
-    print(f"Written {outname} with {len(cols[0])} lines kept")
-    recomputeLines(file)
+    logger.info(f"Written {outname} with {len(cols[0])} lines kept")
+    _recomputeLines(file)
     return
 
-
-
-
-####################################################
+#####################################################
 #####Line-ID Helpers#################################
-def parseCsvTable(fname):
+def _parseCsvTable(fname):
     """
     Parse a simple CSV table with columns:
       LineName, RestValue, (optionally) transition.
@@ -1187,9 +1305,7 @@ def parseCsvTable(fname):
         data["transition"] = df["transition"].astype(str).values
     return data
 
-
-
-def readPDR4all(fname):
+def _readPDR4all(fname):
     """
     Parse .lst file with fixed-width format from PDR4all.
     """
@@ -1222,9 +1338,9 @@ def readPDR4all(fname):
     # Warn if rows dropped
     dropped = df[df["RestValue"].isna()]
     if not dropped.empty:
-        print(f"[readPDR4all] Dropped {len(dropped)} rows with invalid RestValue in {fname}:")
+        logger.warn(f"[readPDR4all] Dropped {len(dropped)} rows with invalid RestValue in {fname}:")
         for _, row in dropped.iterrows():
-            print(f"   Species={row['Species']} | Transition={row['transition']} | Raw='{row['RestValue_raw']}'")
+            logger.info(f"   Species={row["Species"]} | Transition={row["transition"]} | Raw={row["RestValue_raw"]}")
 
     # Keep only valid ones
     df = df.dropna(subset=["RestValue"])
@@ -1235,15 +1351,14 @@ def readPDR4all(fname):
         "transition": df["transition"].astype(str).tolist()
     }
 
-
-def readISO(fname):
+def _readISO(fname):
     '''
     Helper for reading list of fine structure lines in the 2-205 micron range
     '''
     import pandas as pd
     df = pd.read_csv(
         fname,
-        delim_whitespace=True,
+        sep=r"\s+",
         comment="#",
         names=["LineName","transition","RestValue","elambda","ep","ip"],
         skiprows=4
@@ -1254,12 +1369,12 @@ def readISO(fname):
         "RestValue": df["RestValue"].astype(float).values
     }
 
-def readNIST(fname):
+def _readNIST(fname):
     '''
     code to read the NIST atomic line database in HTML
     '''
     import os 
-    import numpy as np
+    
     try:
         with open(fname, "r", encoding="utf-8") as fp:
             lines = fp.readlines()
@@ -1307,15 +1422,43 @@ def readNIST(fname):
             "RestValue": np.array(RestValue, dtype=float),
             "transition": np.array(transition)}
 
+def _print_catalog_names(ignore_cats=None):
+    ''' Helper function that prints the possible catalog names and brief info to the terminal.
+    Helpful for the user to decide which (if any) catalogs to exclude.
 
+    Parameters
+    ----------
+    ignore_cats : str, list of str, or None
+        if not None, don't print the information about the listed catalogs (Default: None)
+
+    '''
+    import os
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    catdir = os.path.join(script_dir, "line_lists")
+
+    catnames = [
+        "Atomic-Ionic_FineStructure.csv", "Atomic-Ionic.csv", "H-He.csv", "H2.csv",
+        "HeI-HeII.csv", "CO.csv", "publis20240406.lst",
+        "ISOLineList.txt", "NIST-ASDLines.html"]
+
+    if ignore_cats != None:
+        for cname in ignore_cats:
+            try:
+                catnames.remove(cname)
+            except ValueError:
+                logger.error("Invalid catalog name %s in 'ignore_cats'. Proceeding without removing.")
+
+    print('Available line catalogs are: '+', '.join(catnames))
+    return
 
 
 #####################################################################################
 #####LineID code ####################################################################
-def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
+def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None, verbose=False):
     '''
     Line identifier that goes through peaks extracted from
-    CatPeaks and identifies likely lines corresponding to them
+    catPeaks and identifies likely lines corresponding to them
     
     Parameters
     ----------------
@@ -1326,7 +1469,7 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
         velocity with respect to local standard of rest with units of km/s. 
         If input <= 20 assumes to be a redshift input instead. 
     R : float 
-        precision level for uncertainty.
+        precision level for uncertainty (lambda/Dlambda).
     outname : str 
         desired path to outfile if 
         new destination is desired. Optional. 
@@ -1334,6 +1477,11 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
     cat_path: str 
         optional path to line list 
         if lists are not in the same directory.
+    ignore_cats : list or None
+        Names of catalogs to ignore (Default: None)
+    verbose : bool
+        Print list of peaks to logger (True) or not (False) (Default: False)
+
         
     Returns:
     .txt file containing information on likely identifed lines given characteristics.
@@ -1342,7 +1490,8 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
     '''
     
     import os 
-    import numpy as np
+    
+
     clight = 3e5
     # Handle file or array input
     if isinstance(linefile, str):
@@ -1356,9 +1505,9 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
             fp.readline(); fp.readline()
             ln = fp.readline()
             if "Gauss" in ln:
-                cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(12), unpack=True)
+                cols = np.loadtxt(fname, usecols=range(12), unpack=True)
             else:
-                cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(3), unpack=True)
+                cols = np.loadtxt(fname, usecols=range(3), unpack=True)
         lineno, wv = cols[0].astype(int), cols[1]
     elif isinstance(linefile, (list, np.ndarray)):
         wv = np.array(linefile)
@@ -1374,7 +1523,9 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
 
     if R is None:
         R = 250
-        print(f"Adopting default precision lambda/Dlambda={R}")
+        logger.info(f"Adopting default precision lambda/Dlambda={R}")
+    else:
+        logger.info(f"Using precision lambda/Dlambda={R}")
 
     # Catalogs
     
@@ -1396,35 +1547,50 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
         "ISOLineList.txt", "NIST-ASDLines.html"
     ]
 
+    if ignore_cats != None:
+        for cname in ignore_cats:
+            try:
+                catnames.remove(cname)
+                logger.info("Removing %s from catalog list" %catnames)
+            except ValueError:
+                logger.error("Invalid catalog name %s in 'ignore_cats'. Proceeding without removing.")
+
     cat = []
+    logger.info("Checking for line candidates against "+", ".join(str(cname) for cname in catnames))
     for cname in catnames:
         if ".csv" in cname:
-            cat.append(parseCsvTable(os.path.join(catdir, cname)))
+            cat.append(_parseCsvTable(os.path.join(catdir, cname)))
         elif ".lst" in cname:
-            cat.append(readPDR4all(os.path.join(catdir, cname)))
+            cat.append(_readPDR4all(os.path.join(catdir, cname)))
         elif "ISOLineList" in cname:
-            cat.append(readISO(os.path.join(catdir, cname)))
+            cat.append(_readISO(os.path.join(catdir, cname)))
         elif "NIST" in cname:
-            cat.append(readNIST(os.path.join(catdir, cname)))
+            cat.append(_readNIST(os.path.join(catdir, cname)))
         else:
             raise ValueError(f"Catalog {cname} not recognized.")
 
     # velocity or z
     if vlsr > 20:
         wvr = wv / (1 + vlsr/clight)
-        fp.write(f"Matching lines in {linefile} assuming vlsr={vlsr:.0f} km/s\n")
-        print(f"Matching lines in {linefile} assuming vlsr={vlsr:.0f} km/s")
+        vz_str = "vlsr={vlsr:.0f} km/s"
     else:
         wvr = wv / (1 + vlsr)
-        fp.write(f"Matching lines in {linefile} assuming redshift z={vlsr:.5f}\n")
-        print(f"Matching lines in {linefile} assuming redshift z={vlsr:.5f}")
-    fp.write("\n")
+        vz_str = "redshift z={vlsr:.5f}"
+
+    fname_vz_str = f"Matching lines in {fname} assuming "+vz_str
+    fp.write(fname_vz_str)
+    if verbose == True:
+        logger.info(fname_vz_str)
+
+    fp.write("\n\n")
 
     nm = 0
     for i, (lnum, w) in enumerate(zip(lineno, wv)):
         err = w / R
-        fp.write(f"#{lnum:3d} {w:8.4f}+/-{err:0.4f} um (rest={wvr[i]:8.4f} um):\n       ")
-        print(f"#{lnum:3d} {w:8.4f}+/-{err:0.4f} um (rest={wvr[i]:8.4f} um):\n       ")
+        peak_info_str = f"#{lnum:3d} {w:8.4f}+/-{err:0.4f} um (rest={wvr[i]:8.4f} um):\n       "
+        fp.write(peak_info_str)
+        if verbose == True:
+            logger.info(peak_info_str)
 
         dd, tn, sp, rv, cn = [], [], [], [], []
         nl = 0
@@ -1455,16 +1621,19 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
             for jdx, idx in enumerate(ix):
                 velshift = dd[idx] / rv[idx] * clight
                 if jdx == 0:
-                    fp.write(f"| {tn[idx]} {velshift:+4.0f} | ")
-                    print(f"| {tn[idx]} {velshift:+4.0f} | ", end="")
+                    match_cand_str = f"| {tn[idx]} {velshift:+4.0f} | "
+     
                 else:
-                    fp.write(f"{tn[idx]} {velshift:+4.0f} | ")
-                    print(f"{tn[idx]} {velshift:+4.0f} | ", end="")
+                    match_cand_str = f"{tn[idx]} {velshift:+4.0f} | "
+                fp.write(match_cand_str)
+                if verbose == True:
+                    logger.info(match_cand_str)
             fp.write("\n\n")
-            print()
 
-            fp.write(f"       BEST: DLambda={dd[ix[0]]:0.4f} um, Catalog={catnames[cn[ix[0]]]}, Restwv={rv[ix[0]]:0.4f}\n       {tn[ix[0]]}\n")
-            print(f"       BEST: DLambda={dd[ix[0]]:0.4f} um, Catalog={catnames[cn[ix[0]]]}, Restwv={rv[ix[0]]:0.4f}\n       {tn[ix[0]]}")
+            best_match_str = f"       BEST: DLambda={dd[ix[0]]:0.4f} um, Catalog={catnames[cn[ix[0]]]}, Restwv={rv[ix[0]]:0.4f}\n       {tn[ix[0]]}\n"
+            fp.write(best_match_str)
+            if verbose == True:
+                logger.info(best_match_str)
             if len(ix) > 1:
                 k = 1
                 found = True
@@ -1475,26 +1644,36 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
                         found = False
                         break
                 if found:
-                    fp.write(f"       NEXT: DLambda={dd[ix[k]]:0.4f} um, Catalog={catnames[cn[ix[k]]]}, Restwv={rv[ix[k]]:0.4f}\n       {tn[ix[k]]}\n")
-                    print(f"       NEXT: DLambda={dd[ix[k]]:0.4f} um, Catalog={catnames[cn[ix[k]]]}, Restwv={rv[ix[k]]:0.4f}\n       {tn[ix[k]]}")
+                    next_best_match_str = f"       NEXT: DLambda={dd[ix[k]]:0.4f} um, Catalog={catnames[cn[ix[k]]]}, Restwv={rv[ix[k]]:0.4f}\n       {tn[ix[k]]}\n"
+                    fp.write(next_best_match_str)
+                    if verbose == True:
+                        logger.info(next_best_match_str)
         else:
-            fp.write(f"       NOMATCH within +/-{w/R:0.4f} um\n")
-            print(f"       NOMATCH within +/-{w/R:0.4f} um")
+            no_match_str = f"       NOMATCH within +/-{w/R:0.4f} um\n"
+            fp.write(no_match_str)
+            if verbose == True:
+                logger.info(no_match_str)
             nm += 1
 
     fp.close()
-    print(f"Attempted IDs for {len(wv)} lines, found no matches for {nm} lines")
+    logger.info(f"Attempted IDs for {len(wv)} lines, found no matches for {nm} lines")
     return
 
 ######## Additional commands ####################
 
-def findLines(fname, outname, wmin, wmax, pixco=None, snr=5, thr=2, ID=False, vlsr=None, catdir=None):
-    """
+def findLines(fname, outname, wmin, wmax, pixco=None, snr=5, thr=2, ID=False, vlsr=None, catdir=None, ext=1):
+    '''
     Extract spectrum from FITS cube and identify peaks within a wavelength range.
     Works like catPeaks, but restricted to [wmin, wmax]. output files are default labeled with 
     wavelength range.
+        .txt file containing peak information
+        .txt file containing the extracted spectra
+        .txt file containing the continuum of region
+        .tex file containing the model of the spectra
+        .png plot of spectra with peaks marked and labeled
+        if ID is True
+            .txt file containing information on likely identifed lines given characteristics
     lineID may also be ran internally through code.
-    
     
 
     Parameters
@@ -1512,27 +1691,20 @@ def findLines(fname, outname, wmin, wmax, pixco=None, snr=5, thr=2, ID=False, vl
     ID : Bool
         If user wants to perform lineID also set True.
     vlsr: float
-        Line ID parameter (see linID).
+        Line ID parameter (see lineID).
     catdir: str
         path to line lists if not default path.
+    ext : int
+        Extension of FITS file to use (Default: 1)
 
-    Returns: .txt file containing peak information
-             .txt file containing the extracted spectra
-             .txt file containing the continuum of region
-             .tex file containing the model of the spectra
-             .png plot of spectra with peaks marked and labeled
-        if ID is True
-            .txt file containing information on likely identifed lines given characteristics
-    ''''
-    -------
     
-    """
-    import numpy as np
+    '''
+    
     import matplotlib.pyplot as plt
 
     # Handle input FITS
     if isinstance(fname, str):
-        r = rfits(fname, 'xten1')
+        r = _rfits(fname, ext=ext)
     else:
         r = fname
 
@@ -1543,11 +1715,11 @@ def findLines(fname, outname, wmin, wmax, pixco=None, snr=5, thr=2, ID=False, vl
     snr = snr / 1.5  # MAD conversion
 
     # Extract spectrum
-    s, region, mask, flag = extract_aperture(r, pixco)
+    s, region, mask, flag = _extract_aperture(r, pixco)
     if flag != 0:
-        return {'flag': flag}
+        return {"flag": flag}
 
-    x = np.array(r['x'][2])[~np.isnan(s)]
+    x = np.array(r["x"][2])[~np.isnan(s)]
     y = s[~np.isnan(s)]
 
     # Restrict to wavelength range
@@ -1560,65 +1732,63 @@ def findLines(fname, outname, wmin, wmax, pixco=None, snr=5, thr=2, ID=False, vl
     mf = np.array([1, 1, 0, -1, -1])
     dy = np.diff(yy)
     dx = (xx[1:] + xx[:-1]) / 2
-    cc = np.convolve(dy, -mf, mode='same')
+    cc = np.convolve(dy, -mf, mode="same")
     scc = np.median(np.abs(cc - np.median(cc))) / 0.6745
-    p = sigChans(dx, cc, scc, snr, thr)
+    p = _sigChans(dx, cc, scc, snr, thr)
 
-    q_result, ymo, cont = fitLines(xx, yy, p)
+    q_result, ymo, cont = _fitLines(xx, yy, p)
 
     # Plot
     plt.figure(1)
     plt.clf()
     plt.plot(xx, yy)
-    plt.yscale('log')
+    plt.yscale("log")
     ax = plt.axis()
     for j, (loc, amp) in enumerate(p):
         nearest = np.argmin(np.abs(loc - xx))
         label_y = yy[nearest] * 0.99
-        plt.plot([loc, loc], [10**np.floor(np.log10(min(yy))), max(yy)], 'r-.')
-        plt.text(loc, label_y, str(j+1), ha='center', va='top', fontsize=14)
+        plt.plot([loc, loc], [10**np.floor(np.log10(min(yy))), max(yy)], "r-.")
+        plt.text(loc, label_y, str(j+1), ha="center", va="top", fontsize=14)
     plt.axis([xx[0], xx[-1], ax[2], ax[3]])
-    plt.xlabel('Wavelength (um)')
-    plt.ylabel(f'Flux ({r["bunit"]})')
+    plt.xlabel("Wavelength (um)")
+    plt.ylabel(f"Flux ({r["bunit"]})")
     plt.savefig(f"{outname}-findLines{wmin}-{wmax}mircon.png")
 
     # Write output files
     s2f = np.sqrt(np.log(256))
-    with open(f'{outname}-findLines{wmin}-{wmax}mircon-peaklist.txt', 'w') as fp:
-        fp.write(f"%% Cube: {fname}\n")
-        fp.write(f"%% Region: {region}\n")
-        fp.write(f"%% Wavelength range: {wmin:.3f}-{wmax:.3f} µm\n")
-        fp.write("%% num wave(um) peak(MJy/sr) GaussK GaussFWHM(um) GaussX(um) "
+    with open(f"{outname}-findLines{wmin}-{wmax}mircon-peaklist.txt", "w") as fp:
+        fp.write(f"# Cube: {fname}\n")
+        fp.write(f"# Region: {region}\n")
+        fp.write(f"# Wavelength range: {wmin:.3f}-{wmax:.3f} µm\n")
+        fp.write("# num wave(um) peak(MJy/sr) GaussK GaussFWHM(um) GaussX(um) "
                  "Flux(W/m2/sr) eGaussK eGaussS eGaussX eFlux flag\n")
         for i in range(len(p)):
-            S_abs = abs(q_result['S'][i])
-            flux = q_result['area'][i]
-            eS = q_result['eS'][i] * s2f
-            fp.write(f"{i+1:3d} {p[i][0]:8.4f} {p[i][1]:12.4f} {q_result['K'][i]:12.4f} "
-                     f"{S_abs * s2f:8.4f} {q_result['X0'][i]:8.4f} {flux:8.4g} "
-                     f"{q_result['eK'][i]:8.4g} {eS:8.4g} {q_result['eX0'][i]:8.4g} "
-                     f"{q_result['earea'][i]:8.4g} {q_result['flag'][i]:2d}\n")
+            S_abs = abs(q_result["S"][i])
+            flux = q_result["area"][i]
+            eS = q_result["eS"][i] * s2f
+            fp.write(f"{i+1:3d} {p[i][0]:8.4f} {p[i][1]:12.4f} {q_result["K"][i]:12.4f} "
+                     f"{S_abs * s2f:8.4f} {q_result["X0"][i]:8.4f} {flux:8.4g} "
+                     f"{q_result["eK"][i]:8.4g} {eS:8.4g} {q_result["eX0"][i]:8.4g} "
+                     f"{q_result["earea"][i]:8.4g} {q_result["flag"][i]:2d}\n")
 
-    np.savetxt(f'{outname}_spec{wmin}-{wmax}mircon.txt', np.column_stack((xx, yy)), header=f'{fname}')
-    np.savetxt(f'{outname}_cont{wmin}-{wmax}mircon.txt', np.column_stack((xx, cont)), header=f'{fname}')
-    np.savetxt(f'{outname}_model{wmin}-{wmax}mircon.txt', np.column_stack((xx, ymo)), header=f'{fname}')
+    np.savetxt(f"{outname}_spec{wmin}-{wmax}mircon.txt", np.column_stack((xx, yy)), header=f"{fname}")
+    np.savetxt(f"{outname}_cont{wmin}-{wmax}mircon.txt", np.column_stack((xx, cont)), header=f"{fname}")
+    np.savetxt(f"{outname}_model{wmin}-{wmax}mircon.txt", np.column_stack((xx, ymo)), header=f"{fname}")
 
-    print(f"findLines: detected {len(p)} lines in {wmin}-{wmax} µm")
+    logger.info(f"findLines: detected {len(p)} lines in {wmin}-{wmax} µm")
     
     if ID==True:
         if vlsr is None:
             raise ValueError("Must define vlsr to perform Line identification")
         if catdir is None:
-            lineID(f'{outname}-findLines{wmin}-{wmax}mircon',vlsr)
+            lineID(f"{outname}-findLines{wmin}-{wmax}mircon",vlsr)
         else:
-            lineID(f'{outname}-findLines{wmin}-{wmax}mircon',vlsr,cat_path=catdir)
+            lineID(f"{outname}-findLines{wmin}-{wmax}mircon",vlsr,cat_path=catdir)
         
     
     return 
 
-
-
-def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat_path=None, outname=None, plot=False):
+def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat_path=None, outname=None, plot=False, ignore_cats=None):
     """
     Identify whether specified species appear in the detected spectrum.
     
@@ -1649,7 +1819,8 @@ def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat
     matches : list of dict
         Each dict has keys: line_num, obs_wv, rest_wv, species, transition, velshift.
     """
-    import os, numpy as np
+    import os
+    
     import matplotlib.pyplot as plt
     clight = 3e5
 
@@ -1666,9 +1837,9 @@ def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat
         fp.readline(); fp.readline()
         ln = fp.readline()
         if "Gauss" in ln:
-            cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(12), unpack=True)
+            cols = np.loadtxt(fname, comments="#", usecols=range(12), unpack=True)
         else:
-            cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(3), unpack=True)
+            cols = np.loadtxt(fname, comments="#", usecols=range(3), unpack=True)
 
     lineno, wv = cols[0].astype(int), cols[1]
 
@@ -1695,18 +1866,28 @@ def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat
         "ISOLineList.txt", "NIST-ASDLines.html"
     ]
 
+    if ignore_cats != None:
+        for cname in ignore_cats:
+            try:
+                catnames.remove(cname)
+                logger.info("Removing %s from catalog list" %catnames)
+            except ValueError:
+                logger.error("Invalid catalog name %s in 'ignore_cats'. Proceeding without removing.")
+
+    logger.info("Checking for line candidates against "+", ".join(str(cname) for cname in catnames))
+
     # --- Load catalogs ---
     catalogs = []
     for cname in catnames:
         path = os.path.join(catdir, cname)
         if ".csv" in cname:
-            catalogs.append(parseCsvTable(path))
+            catalogs.append(_parseCsvTable(path))
         elif ".lst" in cname:
-            catalogs.append(readPDR4all(path))
+            catalogs.append(_readPDR4all(path))
         elif "ISOLineList" in cname:
-            catalogs.append(readISO(path))
+            catalogs.append(_readISO(path))
         elif "NIST" in cname:
-            catalogs.append(readNIST(path))
+            catalogs.append(_readNIST(path))
 
     # --- Open output ---
     if outname is None:
@@ -1759,7 +1940,7 @@ def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat
 
 
     fp.close()
-    print(f"findSpecies: wrote {len(matches)} matches to {outname}")
+    logger.info(f"findSpecies: wrote {len(matches)} matches to {outname}")
 
     # --- Optional plotting ---
     if plot and matches:
@@ -1777,9 +1958,9 @@ def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat
             for m in matches:
                 x = m["obs_wv"]
                 plt.axvline(x, color="r", ls="--", alpha=0.6, zorder=5)
-                label = f"{m['species']}"
+                label = f"{m["species"]}"
                 if m["transition"]:
-                    label += f" {m['transition']}"
+                    label += f" {m["transition"]}"
                 plt.text(x-0.05, max(yy)*0.4, label, rotation=90,
                          ha="center", va="bottom", fontsize=8, color="red")
 
@@ -1787,12 +1968,11 @@ def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat
             plt.tight_layout()
             plt.savefig(plotname, dpi=150)
             plt.close()
-            print(f"findSpecies: plot saved to {plotname}")
+            logger.info(f"findSpecies: plot saved to {plotname}")
         except Exception as e:
-            print(f"[findSpecies] Plotting failed: {e}")
+            logger.error(f"[findSpecies] Plotting failed: {e}")
 
     return matches
-
 
 def readLineID(filename: str) -> Dict[str, Any]:
     """
@@ -1822,6 +2002,7 @@ def readLineID(filename: str) -> Dict[str, Any]:
       ]
     }
     """
+    import re
 
     # Regex patterns
     hdr_vlsr_re = re.compile(r"assuming\s+vlsr\s*=\s*([\-0-9.]+)\s*km/s", re.I)
@@ -1869,10 +2050,10 @@ def readLineID(filename: str) -> Dict[str, Any]:
         rest_header = float(m.group(4))
 
         i += 1
-        # Collect candidate lines (may be one or more lines containing '|')
+        # Collect candidate lines (may be one or more lines containing "|")
         candidates = []
-        while i < n and 'BEST:' not in lines[i] and 'NEXT:' not in lines[i] and not lines[i].lstrip().startswith('#'):
-            if '|' in lines[i]:
+        while i < n and "BEST:" not in lines[i] and "NEXT:" not in lines[i] and not lines[i].lstrip().startswith("#"):
+            if "|" in lines[i]:
                 for cm in cand_re.finditer(lines[i]):
                     label = cm.group(1).strip()
                     vel = int(cm.group(2))
@@ -1883,7 +2064,7 @@ def readLineID(filename: str) -> Dict[str, Any]:
         nxt = None
 
         # Parse BEST (if present)
-        if i < n and lines[i].lstrip().upper().startswith('BEST:'):
+        if i < n and lines[i].lstrip().upper().startswith("BEST:"):
             bm = bestnext_re.match(lines[i].strip())
             if bm:
                 dl, cat, rw = float(bm.group(2)), bm.group(3).strip(), float(bm.group(4))
@@ -1894,7 +2075,7 @@ def readLineID(filename: str) -> Dict[str, Any]:
                 i += 1  # fail-safe advance
 
         # Parse NEXT (if present)
-        if i < n and lines[i].lstrip().upper().startswith('NEXT:'):
+        if i < n and lines[i].lstrip().upper().startswith("NEXT:"):
             nm = bestnext_re.match(lines[i].strip())
             if nm:
                 dl, cat, rw = float(nm.group(2)), nm.group(3).strip(), float(nm.group(4))
@@ -1915,8 +2096,6 @@ def readLineID(filename: str) -> Dict[str, Any]:
         })
 
     return {"vlsr_kms": vlsr_kms, "blocks": blocks}
-
-
 
 def plotID(linename, specname, savefig=False, outname=None):
     '''
@@ -1941,34 +2120,40 @@ def plotID(linename, specname, savefig=False, outname=None):
     plot of spectra with identified lines marked and labeled
     
     '''
-    import numpy as np
+    
     import matplotlib.pyplot as plt
     
-    basedata = np.loadtxt(specname)
+    with open(specname) as fp:
+        for line in fp:
+            if "flux(" in line:
+                bunit = line.split("flux(")[1].rstrip().replace(")","")
+                break
+    basedata = np.loadtxt(specname,comments="#")
     x, y = basedata[:, 0], basedata[:, 1]
     top = max(y)
     
     res = readLineID(linename)
     best_labels = [b["best"]["label"] for b in res["blocks"] if b["best"]]
-    obwave = [k['obs_wv_um'] for k in res['blocks']]
+    obwave = [k["obs_wv_um"] for k in res["blocks"] if k["best"]]
     
     plt.figure(figsize=(9,8))
-    plt.plot(x, y, color='k', lw=1, zorder=10)
-    plt.yscale('log')
-    plt.xlabel('Wavelength (um)')
-    plt.ylabel('Flux (MJy/sr)')
+    plt.plot(x, y, color="k", lw=1, zorder=10)
+    plt.yscale("log")
+    plt.xlabel("Wavelength ($\\mu$m)")
+    plt.ylabel("Flux ("+bunit+")")
+    plt.minorticks_on()
     
     for j in range(len(obwave)):
-        plt.axvline(obwave[j], color='r', ls='--', alpha=0.6, zorder=5)
+        plt.axvline(obwave[j], color="r", ls="-", alpha=0.2, zorder=5)
         plt.text(obwave[j]-0.05, top*0.5, best_labels[j], rotation=90,
-                 ha='center', va='bottom', fontsize=8, color='red')
+                 ha="center", va="bottom", fontsize=8, color="red")
         
     if savefig is True:
         if outname is None:
-            raise ValueError('Must define a path for figure to save to')
-        plt.savefig(outname, bbox_inches='tight')
-    
-    plt.show()
+            raise ValueError("Must define a path for figure to save to")
+        plt.savefig(outname, bbox_inches="tight")
+    else:
+        plt.show()
     
     
     return
