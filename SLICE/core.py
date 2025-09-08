@@ -410,6 +410,13 @@ def extract_aperture(r, pixco, useapprox=False, silent=False):
     from astropy.coordinates import SkyCoord
     import warnings
     
+    #make sure pixco is properly defined
+    if pixco is not None:
+        if type(pixco) == list and len(pixco) == 1:
+            raise ValueError('pixco list must specify x and y pixel coordinates')
+        elif type(pixco) == tuple and np.shape(pixco)[0] > 2:
+            raise ValueError('array list of pixel coordinates must be given as ([x1, x2, x3...],[y1, y2, y3...]')
+    
     flag = 0
     data = r["data"]
     shape = data.shape
@@ -424,90 +431,99 @@ def extract_aperture(r, pixco, useapprox=False, silent=False):
 
     
     mask = np.zeros(shape[:2], dtype=float)
-
-    # Handle 'pixel' case
-    pixco = np.array(pixco)
-    if pixco.ndim == 1 and pixco.shape[0] == 2:
-        region = 'pixel'
-        s = data[pixco[0], pixco[1], :]
-        mask[pixco[0], pixco[1]] = 1
-
-    # Handle 'list' case
-    elif pixco.shape[0] == 2 and pixco.shape[1] > 1:
-        region = 'list'
-        s = np.nanmedian(data[pixco[0], pixco[1], :], axis=(0,))
-        mask[pixco[0], pixco[1]] = 1
-
-    # Handle 'all' case
-    elif pixco.size == 1:
+    
+    # Handle 'all' case (scalar 0)
+    if isinstance(pixco, (int, float)) and pixco == 0:
         region = 'all'
         s = np.nanmedian(data, axis=(0, 1))
         mask[:] = 1
-
-    # Handle 'circle' case
-    elif pixco.shape == (3,) or len(pixco) == 3:
-        region = 'circle'
-        if isinstance(pixco[0], str):
-            rac = sex2dec(pixco[0]) * 15
-            dec = sex2dec(pixco[1])
-            rad = pixco[2]
-        elif isinstance(pixco[0], (int, float)):
-            rac, dec, rad = pixco
-        else:
-            raise ValueError("Format should be ['00:00:00.0','00:00:00.0', 0.0] or [0.0, 0.0, 0.0]")
-
-        wcs1 = r["wcs1"]
-        wcs2 = r["wcs2"]
-
-        xx = (wcs1 - rac) * np.cos(np.deg2rad(r["crval"][1])) * 3600
-        yy = (wcs2 - dec) * 3600
-
-        if useapprox:
-            dist = np.sqrt(xx**2 + yy**2)
-            ix = np.where(dist <= rad)
-        else:
-            
-            weight = aperture(xx, yy, 0, 0, r["cdelt"][1] * 3600, rad)
-            sw = weight / np.nansum(weight)
-
-        s = np.zeros(shape[2])
-        ck = np.zeros(shape[2])
-        for k in range(shape[2]):
-            if useapprox:
-                p = data[:, :, k]
-                s[k] = np.nanmean(p[ix])
-            else:
-                p = data[:, :, k] * sw
-                pck = np.ones_like(p)
-                pck[np.isnan(p)] = np.nan
-                pck *= sw
-                ck[k] = np.nansum(pck)
-                s[k] = np.nansum(p)
-                if s[k] == 0:
-                    s[k] = np.nan
-                if ck[k] < 0.25:
-                    s[k] = np.nan
-                else:
-                    s[k] = s[k] / ck[k]
-
-        if np.all(np.isnan(s)):
-            flag = -1
-            if not silent:
-                warnings.warn("Aperture is empty (probably outside the cube)")
-            return s, region, mask, flag
-        if np.sum(np.isnan(s)) / len(s) > 0.05:
-            flag = -2
-            if not silent:
-                warnings.warn("A lot of NaNs in the spectrum (close to an edge)")
-            return s, region, mask, flag
-
-        if useapprox:
-            mask[ix] = 1
-        else:
-            mask = weight
-
+        
     else:
-        raise NotImplementedError("Averaging dimensions not implemented")
+        pixco = np.array(pixco)
+        # Handle 'pixel' case
+        if pixco.ndim == 1 and pixco.shape[0] == 2:
+            region = 'pixel'
+            s = data[pixco[0], pixco[1], :]
+            mask[pixco[0], pixco[1]] = 1
+
+        # Handle 'all' case
+        elif type(pixco) is int and pixco == 0:
+            region = 'all'
+            s = np.nanmedian(data, axis=(0, 1))
+            mask[:] = 1
+
+        # Handle 'list' case
+        elif pixco.shape[0] == 2 and pixco.shape[1] > 1:
+            region = 'list'
+            s = np.nanmedian(data[pixco[0], pixco[1], :], axis=(0,))
+            mask[pixco[0], pixco[1]] = 1
+
+
+
+        # Handle 'circle' case
+        elif pixco.shape == (3,) or len(pixco) == 3:
+            region = 'circle'
+            if isinstance(pixco[0], str):
+                rac = sex2dec(pixco[0]) * 15
+                dec = sex2dec(pixco[1])
+                rad = pixco[2]
+            elif isinstance(pixco[0], (int, float)):
+                rac, dec, rad = pixco
+            else:
+                raise ValueError("Format should be ['00:00:00.0','00:00:00.0', 0.0] or [0.0, 0.0, 0.0] for circular aperture")
+
+            wcs1 = r["wcs1"]
+            wcs2 = r["wcs2"]
+
+            xx = (wcs1 - rac) * np.cos(np.deg2rad(r["crval"][1])) * 3600
+            yy = (wcs2 - dec) * 3600
+
+            if useapprox:
+                dist = np.sqrt(xx**2 + yy**2)
+                ix = np.where(dist <= rad)
+            else:
+
+                weight = aperture(xx, yy, 0, 0, r["cdelt"][1] * 3600, rad)
+                sw = weight / np.nansum(weight)
+
+            s = np.zeros(shape[2])
+            ck = np.zeros(shape[2])
+            for k in range(shape[2]):
+                if useapprox:
+                    p = data[:, :, k]
+                    s[k] = np.nanmean(p[ix])
+                else:
+                    p = data[:, :, k] * sw
+                    pck = np.ones_like(p)
+                    pck[np.isnan(p)] = np.nan
+                    pck *= sw
+                    ck[k] = np.nansum(pck)
+                    s[k] = np.nansum(p)
+                    if s[k] == 0:
+                        s[k] = np.nan
+                    if ck[k] < 0.25:
+                        s[k] = np.nan
+                    else:
+                        s[k] = s[k] / ck[k]
+
+            if np.all(np.isnan(s)):
+                flag = -1
+                if not silent:
+                    warnings.warn("Aperture is empty (probably outside the cube)")
+                return s, region, mask, flag
+            if np.sum(np.isnan(s)) / len(s) > 0.05:
+                flag = -2
+                if not silent:
+                    warnings.warn("A lot of NaNs in the spectrum (close to an edge)")
+                return s, region, mask, flag
+
+            if useapprox:
+                mask[ix] = 1
+            else:
+                mask = weight
+
+        else:
+            raise NotImplementedError("Unsupported pixco format for extract aperture")
 
     return s, region, mask, flag
 
@@ -745,10 +761,10 @@ def catPeaks(fname, outname, pixco=None, snr=5, thr=2, nchunk=1):
     outname : str 
         Name of output file. formats as .txt file.
     pixco : array or list like 
-        If "pixco" is an array of 1 row and 2 columns i.e. [X,Y] it will assume the first 
+        If "pixco" is an array of 1 row and 1 column i.e. [X,Y] it will assume the first 
         component is a row number and the second a column number for the pixel in
-        the data, and extract that spectrum to analyze. If it has two rows i.e.
-        [X1 , X2, X3], [Y1, Y2, Y3], it will assume that the first row is the list of 
+        the data, and extract that spectrum to analyze. If it has the form
+        ([X1 , X2, X3], [Y1, Y2, Y3]), it will assume that the first row is the list of 
         row numbers and the second thelist of column numbers of the area to average over. 
         If it is a list with two strings and a float (i.e. [RA, Dec, rad]) it will extract a spectrum at 
         that RA,DEC (colon-separated sexagesimal) in an aperture of that radius in arcsec.
@@ -1368,7 +1384,10 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None):
             outname = f"{linefile}-lineID.txt"
     else:
         raise ValueError("First parameter type not supported.")
-
+    
+    #ensure lineno and wv are arrays
+    lineno, wv = np.atleast_1d(lineno), np.atleast_1d(wv)
+    
     # open output
     fp = open(outname, "w")
 
