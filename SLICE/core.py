@@ -2,7 +2,7 @@
 Code originally written in MATLAB by: A. Bolatto
 
 Adapted and modified for use in Python by: K. Donaghue
-Last modified: 11/18/2025
+Last modified: 2/2/2026
 
 This code is best applied to JWST or similar IR data
 
@@ -643,6 +643,7 @@ def extract_aperture(r, pixco, scale = 1.5, sky_annulus=None, useapprox=False, s
 
             s = np.zeros(shape[2])
             ck = np.zeros(shape[2])
+            omega = np.zeros(shape[2])
 
             for k in range(shape[2]):
                 wave = r["x"][2][k]  # wavelength in microns
@@ -660,6 +661,8 @@ def extract_aperture(r, pixco, scale = 1.5, sky_annulus=None, useapprox=False, s
                     s[k] = np.nanmean(p[ix])
                 else:
                     weight = aperture(xx, yy, 0, 0, r["cdelt"][1] * 3600, rad_arcsec)
+                    omega[k] = np.nansum(weight) * (r["cdelt"][1] * np.pi / 180)**2
+
                     sw = weight / np.nansum(weight)
 
                     p = data[:, :, k] * sw
@@ -745,7 +748,7 @@ def extract_aperture(r, pixco, scale = 1.5, sky_annulus=None, useapprox=False, s
                     sky_spec[k] /= sky_ck[k]
             # subtract sky
             s = s - sky_spec
-    return s, region, mask, flag   
+    return s, region, mask, flag, omega   
 
 
 def sigChans(xx, yy, noise, snr, thr):
@@ -1073,7 +1076,7 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
 
         snr = snr / 1.5  # MAD conversion
 
-        s, region, mask, flag = extract_aperture(r, pixco, scale, sky_annulus)
+        s, region, mask, flag, omega = extract_aperture(r, pixco, scale, sky_annulus)
         if flag == -1:
             return {'Aperture is completely empty'}
         if flag == -2:
@@ -1096,10 +1099,7 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
     onp = 1
     mf = np.array([1, 1, 0, -1, -1])
     pp = []
-    q_result = {
-        'S': [], 'K': [], 'X0': [], 'area': [],
-        'eK': [], 'eS': [], 'eX0': [], 'earea': [], 'flag': []
-    }
+    q_result = {'S': [], 'K': [], 'X0': [], 'area': [], 'flux': [], 'omega': [], 'eK': [], 'eS': [], 'eX0': [], 'earea': [], 'eflux': [], 'flag': []}
 
     for i in range(nchunk):
         if use_ix:
@@ -1117,7 +1117,21 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
 
         p = sigChans(dx, cc, scc, snr, thr)
         q, ymo, cont = fitLines(xx, yy, p)
+        
+        flux_chunk = np.zeros(len(q['area']))
+        eflux_chunk = np.zeros(len(q['area']))
+        omega_chunk =np.zeros(len(q['area']))
+        for j in range(len(q['area'])):
+            if np.isnan(q['area'][j]):
+                flux_chunk[j] = np.nan
+                eflux_chunk[j] = np.nan
+                continue
 
+            Omega_at_line = omega[np.argmin(np.abs(xx - q['X0'][j]))]
+            omega_chunk[j] = Omega_at_line
+            flux_chunk[j] = q['area'][j] * Omega_at_line   # W/m^2
+            eflux_chunk[j] = q['earea'][j] * Omega_at_line
+        
         np_detected += len(p)
         pp.extend(p)
         if savefig == True:
@@ -1145,9 +1159,18 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
 
         # Append fit info
         for k in range(len(q['S'])):
-            for key in q_result:
-                q_result[key].append(q[key][k])
-
+            q_result['S'].append(q['S'][k])
+            q_result['K'].append(q['K'][k])
+            q_result['X0'].append(q['X0'][k])
+            q_result['area'].append(q['area'][k])
+            q_result['flux'].append(flux_chunk[k])
+            q_result['eflux'].append(eflux_chunk[k])
+            q_result['eK'].append(q['eK'][k])
+            q_result['eS'].append(q['eS'][k])
+            q_result['eX0'].append(q['eX0'][k])
+            q_result['earea'].append(q['earea'][k])
+            q_result['flag'].append(q['flag'][k])
+            q_result['omega'].append(omega_chunk[k])
     # Write output files
     s2f = np.sqrt(np.log(256))
     with open(f'{outname}-peaklist.txt', 'w') as fp:
@@ -1159,19 +1182,27 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
             fp.write("list " + " ".join(map(str, pixco[0])) + "\n")
             fp.write("%%              " + " ".join(map(str, pixco[1])) + "\n")
         elif region == 'circle' and isinstance(pixco, list):
-            fp.write(f"circle {pixco[0]},{pixco[1]},{pixco[2]}\n")
+            fp.write(f"%% circle {pixco[0]},{pixco[1]},{pixco[2]}\n")
         else:
             fp.write("undefined\n")
 
-        fp.write(f"%% num wave(um) peak({r['bunit']}) GaussK({r['bunit']}) GaussFWHM(um) GaussX(um) Flux(W/m2/sr) eGaussK eGaussS eGaussX eFlux flag\n")
+        fp.write("%% num wave(um) peak(MJy/sr) GaussK(MJy/sr) GaussFWHM(um) GaussX(um) Intensity(W/m2/sr) Flux(W/m2) ApRadius(arcsec) SolidAngle(omega) eGaussK eGaussS eGaussX eIntensity eFlux flag\n")
         for i in range(np_detected):
             S_abs = abs(q_result['S'][i])
-            flux = q_result['area'][i]
+            Inten = q_result['area'][i]
+            Flux = q_result['flux'][i]
+            eFlux = q_result['eflux'][i]
+            rad = pixco[2]
+            if rad == "auto":
+                rad_arcsec = psfranger(pp[i][0],scale, mode="MRSFWHMLaw2023")
+            else:
+                rad_arcsec = float(rad)   # user-specified arcsec
+
             eS = q_result['eS'][i] * s2f
             fp.write(f"{i+1:3d} {pp[i][0]:8.4f} {pp[i][1]:12.4f} {q_result['K'][i]:12.4f} "
-                     f"{S_abs * s2f:8.4f} {q_result['X0'][i]:8.4f} {flux:8.4g} "
-                     f"{q_result['eK'][i]:8.4g} {eS:8.4g} {q_result['eX0'][i]:8.4g} "
-                     f"{q_result['earea'][i]:8.4g} {q_result['flag'][i]:2d}\n")
+                     f"{S_abs * s2f:8.4f} {q_result['X0'][i]:8.4f} {Inten:8.4g} {Flux:8.4g} {rad_arcsec:8.4g} "
+                     f"{q_result['omega'][i]:8.4g} {q_result['eK'][i]:8.4g} {eS:8.4g} {q_result['eX0'][i]:8.4g} "
+                     f"{q_result['earea'][i]:8.4g} {eFlux:8.4g} {q_result['flag'][i]:2d}\n")
 
     # Spectrum output
     np.savetxt(f'{outname}_spec.txt', np.column_stack((xx, yy)), header=f'{fname}')
@@ -1221,18 +1252,10 @@ def recomputeLines(file):
                 break
 
     # --- Skip headers and inspect format ---
-    with open(fname, "r") as fp:
-        for _ in range(nh):
-            ln = fp.readline().strip()
-        if "Gauss" in ln:
-            cols = np.loadtxt(fp, comments="%", ndmin=2)
-            # Expecting 12 columns
-            C = [cols[:, i] for i in range(cols.shape[1])]
-        else:
-            cols = np.loadtxt(fp, comments="%", ndmin=2)
-            # Expecting 3 columns
-            C = [cols[:, i] for i in range(cols.shape[1])]
-
+    with open(fname, 'r') as fp:
+        cols = np.loadtxt(fp, comments='%', ndmin=2)
+        C = [cols[:, i] for i in range(cols.shape[1])] 
+    
     # --- Load spectrum ---
     u = np.loadtxt(f"{file}_spec.txt")
 
@@ -1251,7 +1274,8 @@ def recomputeLines(file):
                                              (q["K"]**2) * (ednu**2))
 
 
-    
+    Flux = area * C[9]
+    eFlux = earea * C[9]
     # Combine output table
     K = np.column_stack([
         C[0].astype(int),     # ID
@@ -1261,10 +1285,14 @@ def recomputeLines(file):
         q['S'] * s2f,
         q['X0'],
         area,
+        Flux,
+        C[8],
+        C[9],               #solid angle omega
         q['eK'],
         q['eS'] * s2f,
         q['eX0'],
         earea,
+        eFlux,
         q['flag'].astype(int)
     ])
 
@@ -1275,8 +1303,8 @@ def recomputeLines(file):
         for row in K:
             fpw.write((
                 f"{int(row[0]):3d} {row[1]:8.4f} {row[2]:12.4f} {row[3]:12.4f} "
-                f"{row[4]:8.4f} {row[5]:8.4f} {row[6]:8.4g} {row[7]:8.4g} "
-                f"{row[8]:8.4g} {row[9]:8.4g} {row[10]:8.4g} {int(row[11]):2d}\n"
+                f"{row[4]:8.4f} {row[5]:8.4f} {row[6]:8.4g} {row[7]:8.4g} {row[8]:8.4g} {row[9]:8.4g} "
+                f"{row[10]:8.4g} {row[11]:8.4g} {row[12]:8.4g} {row[13]:8.4g} {row[14]:8.4g} {int(row[15]):2d}\n"
             ))
 
     # --- Rewrite cont file ---
@@ -1340,7 +1368,7 @@ def keepLines(file, wave_list, tol=0.05):
         ln = fp.readline()  # header with column names
         header = [line for line in fp if line.startswith("%")]
     if "Gauss" in ln:
-        ncols = 12
+        ncols = 16
     else:
         ncols = 3
 
@@ -1380,9 +1408,9 @@ def keepLines(file, wave_list, tol=0.05):
                 f.write(f"{int(row[0]):3d} {row[1]:8.4f} {row[2]:12.4f}\n")
             else:  # full Gaussian (12 cols)
                 f.write(
-                    f"{int(row[0]):3d} {row[1]:8.4f} {row[2]:12.4f} {row[3]:12.4f} "
-                    f"{row[4]:8.4f} {row[5]:8.4f} {row[6]:8.4g} {row[7]:8.4g} "
-                    f"{row[8]:8.4g} {row[9]:8.4g} {row[10]:8.4g} {int(row[11]):2d}\n"
+                     f"{int(row[0]):3d} {row[1]:8.4f} {row[2]:12.4f} {row[3]:12.4f} "
+                     f"{row[4]:8.4f} {row[5]:8.4f} {row[6]:8.4g} {row[7]:8.4g} {row[8]:8.4g} {row[9]:8.4g} "
+                     f"{row[10]:8.4g} {row[11]:8.4g} {row[12]:8.4g} {row[13]:8.4g} {row[14]:8.4g} {int(row[15]):2d}\n"
                 )
 
     
@@ -1419,16 +1447,15 @@ def cullLines(file, remove_list):
         fp.readline()   # skip % Region
         ln = fp.readline()  # header with column names
 
-    if "Gauss" in ln:
-        ncols = 12
-    else:
-        ncols = 3
+    
+        ncols = 16
+    
+        
 
     # --- Step 2: load numeric data
     cols = np.loadtxt(
         fname,
         comments="%",
-        skiprows=3,
         usecols=range(ncols),
         unpack=True
     )
@@ -1673,7 +1700,7 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
             fp.readline(); fp.readline()
             ln = fp.readline()
             if "Gauss" in ln:
-                cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(12), unpack=True)
+                cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(16), unpack=True)
             else:
                 cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(3), unpack=True)
         lineno, wv = cols[0].astype(int), cols[1]
@@ -1822,7 +1849,7 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
 
 ######## Additional commands ####################
 
-def findLines(fname, outname, wmin, wmax, pixco=None, snr=5, thr=2, ID=False, vlsr=None, catdir=None):
+def findLines(fname, outname, wmin, wmax, pixco=None, scale=1.5, snr=5, thr=2, ID=False, vlsr=None, catdir=None):
     """
     Extract spectrum from FITS cube and identify peaks within a wavelength range.
     Works like catPeaks, but restricted to [wmin, wmax]. output files are default labeled with 
@@ -1841,6 +1868,8 @@ def findLines(fname, outname, wmin, wmax, pixco=None, snr=5, thr=2, ID=False, vl
         Wavelength range in microns.
     pixco : list/tuple, optional
         Pixel/aperture specification (see catPeaks).
+    scale : float
+        The scale factor to multiply the FWHM from the conical aperture to account for full PSF. defaults to 1.5
     snr, thr : float
         Peak finding parameters.(see catPeaks)
     ID : Bool
@@ -1877,7 +1906,7 @@ def findLines(fname, outname, wmin, wmax, pixco=None, snr=5, thr=2, ID=False, vl
     snr = snr / 1.5  # MAD conversion
 
     # Extract spectrum
-    s, region, mask, flag = extract_aperture(r, pixco)
+    s, region, mask, flag, omega = extract_aperture(r, pixco, scale)
     if flag != 0:
         return {'flag': flag}
 
@@ -1899,7 +1928,21 @@ def findLines(fname, outname, wmin, wmax, pixco=None, snr=5, thr=2, ID=False, vl
     p = sigChans(dx, cc, scc, snr, thr)
 
     q_result, ymo, cont = fitLines(xx, yy, p)
+    
+    flux_chunk = np.zeros(len(q_result['area']))
+    eflux_chunk = np.zeros(len(q_result['area']))
+    omega_chunk =np.zeros(len(q_result['area']))
+    for j in range(len(q_result['area'])):
+        if np.isnan(q_result['area'][j]):
+            flux_chunk[j] = np.nan
+            eflux_chunk[j] = np.nan
+            continue
 
+        Omega_at_line = omega[np.argmin(np.abs(xx - q_result['X0'][j]))]
+        omega_chunk[j] = Omega_at_line
+        flux_chunk[j] = q_result['area'][j] * Omega_at_line   # W/m^2
+        eflux_chunk[j] = q_result['earea'][j] * Omega_at_line
+    
     # Plot
     plt.figure(1)
     plt.clf()
@@ -1922,16 +1965,25 @@ def findLines(fname, outname, wmin, wmax, pixco=None, snr=5, thr=2, ID=False, vl
         fp.write(f"%% Cube: {fname}\n")
         fp.write(f"%% Region: {region}\n")
         fp.write(f"%% Wavelength range: {wmin:.3f}-{wmax:.3f} µm\n")
-        fp.write(f"%% num wave(um) peak({r['bunit']}) GaussK GaussFWHM(um) GaussX(um) "
-                 "Flux(W/m2/sr) eGaussK eGaussS eGaussX eFlux flag\n")
+        fp.write("%% num wave(um) peak(MJy/sr) GaussK(MJy/sr) GaussFWHM(um) GaussX(um) Intensity(W/m2/sr) Flux(W/m2)" 
+                 "ApRadius(arcsec) SolidAngle(omega) eGaussK eGaussS eGaussX eIntensity eFlux flag\n")
         for i in range(len(p)):
             S_abs = abs(q_result['S'][i])
-            flux = q_result['area'][i]
+            Inten = q_result['area'][i]
+            Flux = flux_chunk[i]
+            eFlux = eflux_chunk[i]
+            omega = omega_chunk[i]
+            rad = pixco[2]
+            if rad == "auto":
+                rad_arcsec = psfranger(p[i][0],scale, mode="MRSFWHMLaw2023")
+            else:
+                rad_arcsec = float(rad)   # user-specified arcsec
+
             eS = q_result['eS'][i] * s2f
             fp.write(f"{i+1:3d} {p[i][0]:8.4f} {p[i][1]:12.4f} {q_result['K'][i]:12.4f} "
-                     f"{S_abs * s2f:8.4f} {q_result['X0'][i]:8.4f} {flux:8.4g} "
-                     f"{q_result['eK'][i]:8.4g} {eS:8.4g} {q_result['eX0'][i]:8.4g} "
-                     f"{q_result['earea'][i]:8.4g} {q_result['flag'][i]:2d}\n")
+                     f"{S_abs * s2f:8.4f} {q_result['X0'][i]:8.4f} {Inten:8.4g} {Flux:8.4g} {rad_arcsec:8.4g} "
+                     f"{omega:8.4g} {q_result['eK'][i]:8.4g} {eS:8.4g} {q_result['eX0'][i]:8.4g} "
+                     f"{q_result['earea'][i]:8.4g} {eFlux:8.4g} {q_result['flag'][i]:2d}\n")
 
     np.savetxt(f'{outname}_spec{wmin}-{wmax}mircon.txt', np.column_stack((xx, yy)), header=f'{fname}')
     np.savetxt(f'{outname}_cont{wmin}-{wmax}mircon.txt', np.column_stack((xx, cont)), header=f'{fname}')
@@ -2000,7 +2052,7 @@ def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat
         fp.readline(); fp.readline()
         ln = fp.readline()
         if "Gauss" in ln:
-            cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(12), unpack=True)
+            cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(16), unpack=True)
         else:
             cols = np.loadtxt(fname, comments="%", skiprows=3, usecols=range(3), unpack=True)
 
@@ -2447,19 +2499,23 @@ def getLines(peaklist, linelist, species, outfile):
     '''
     
     # read in the peaklist file
-    cols = np.loadtxt(peaklist, comments="%", skiprows=3, usecols=range(12), unpack=True)
+    cols = np.loadtxt(peaklist, comments="%", skiprows=3, usecols=range(16), unpack=True)
     #Want the wavelength easily accessible for testing
     wave = cols[1]
     peak_inten = cols[2]
     gaussk = cols[3]
     gaussFWHM = cols[4]
     gaussx = cols[5]
-    flux = cols[6]
-    egaussk = cols[7]
-    egaussS = cols[8]
-    egaussx = cols[9]
-    eflux = cols[10]
-    flag = cols[11]
+    Inten = cols[6]
+    Flux = cols[7]
+    Ap = cols[8]
+    omega = cols[9]
+    egaussk = cols[10]
+    egaussS = cols[11]
+    egaussx = cols[12]
+    eInten = cols[13]
+    eflux = cols[14]
+    flag = cols[15]
     
     # read in linelist file
     line = readLineID(linelist)
@@ -2471,20 +2527,23 @@ def getLines(peaklist, linelist, species, outfile):
         print(f"⚠️ Warning: mismatch between wave ({len(wave)}) and best_labels ({len(best_labels)}) lengths")
     
     with open(f'{outfile}-{species}_peaklist.txt', 'w') as fp:
-            fp.write("%% ID wave(um) peak(MJy/sr) GaussK(MJy/sr) GaussFWHM(um) GaussX(um) Flux(W/m2/sr) eGaussK eGaussS eGaussX eFlux flag \n")
+            fp.write("%% ID wave(um) peak(MJy/sr) GaussK(MJy/sr) GaussFWHM(um) GaussX(um) Intensity(W/m2/sr) Flux(W/m2)" 
+                     "ApRadius(arcsec) SolidAngle(omega) eGaussK eGaussS eGaussX eIntensity eFlux flag\n")
             for i in range(len(wave)):
                 if best_labels[i].startswith(species):
                     label = best_labels[i]
                     fp.write(f"{label} {wave[i]:8.4f} {peak_inten[i]:12.4f} {gaussk[i]:12.4f} "
-                         f"{gaussFWHM[i]:8.4f} {gaussx[i]:8.4f} {flux[i]:8.4g} "
+                         f"{gaussFWHM[i]:8.4f} {gaussx[i]:8.4f} {Inten[i]:8.4g} "
+                         f"{Flux[i]:8.4g} {Ap[i]:8.4g} {omega[i]:8.4g} "
                          f"{egaussk[i]:8.4g} {egaussS[i]:8.4g} {egaussx[i]:8.4g} "
-                         f"{eflux[i]:8.4g} {flag[i]}\n")
+                         f"{eInten[i]:8.4g} {eflux[i]:8.4g} {flag[i]}\n")
                 elif next_labels[i].startswith(species):
                     label = next_labels[i]
                     fp.write(f"{label} {wave[i]:8.4f} {peak_inten[i]:12.4f} {gaussk[i]:12.4f} "
-                             f"{gaussFWHM[i]:8.4f} {gaussx[i]:8.4f} {flux[i]:8.4g} "
-                             f"{egaussk[i]:8.4g} {egaussS[i]:8.4g} {egaussx[i]:8.4g} "
-                             f"{eflux[i]:8.4g} {flag[i]}\n")
+                         f"{gaussFWHM[i]:8.4f} {gaussx[i]:8.4f} {Inten[i]:8.4g} "
+                         f"{Flux[i]:8.4g} {Ap[i]:8.4g} {omega[i]:8.4g} "
+                         f"{egaussk[i]:8.4g} {egaussS[i]:8.4g} {egaussx[i]:8.4g} "
+                         f"{eInten[i]:8.4g} {eflux[i]:8.4g} {flag[i]}\n")
     
     
     return    
