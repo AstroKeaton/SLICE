@@ -10,12 +10,13 @@ from .core import (
     findSpecies,
     readLineID,
     plotID,
+    viewFit,
     combList,
     getLines,
 )
 
 # Package version
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "core",        # allows `slice.core.catPeaks`
@@ -27,6 +28,7 @@ __all__ = [
     "findSpecies",
     "readLineID",
     "plotID",
+    "viewFit",
     "combList",
     "getLines",
     "__version__",

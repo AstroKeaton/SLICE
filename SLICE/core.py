@@ -2,7 +2,7 @@
 Code originally written in MATLAB by: A. Bolatto
 
 Adapted and modified for use in Python by: K. Donaghue
-Last modified: 2/2/2026
+Last modified: 2/13/2026
 
 This code is best applied to JWST or similar IR data
 
@@ -535,7 +535,29 @@ def annulus_weight(x, y, xc, yc, psize, rin, rout):
     w[w < 0] = 0
     return w
 
-def extract_aperture(r, pixco, scale = 1.5, sky_annulus=None, useapprox=False, silent=False):
+def sector_mask(xx, yy, center_x, center_y, exclude_sectors):
+    """
+    exclude_sectors = list of (theta_min, theta_max) in degrees
+    angles measured CCW from +x axis
+    """
+    # Compute angle map in degrees
+    theta = np.degrees(np.arctan2( (yy - center_y), -(xx - center_x) )) % 360
+
+    mask = np.ones_like(theta)
+
+    for tmin, tmax in exclude_sectors:
+        if tmin < tmax:
+            bad = (theta >= tmin) & (theta <= tmax)
+        else:
+            # wrap-around case (e.g., 350°–20°)
+            bad = (theta >= tmin) | (theta <= tmax)
+
+        mask[bad] = 0
+
+    return mask
+
+
+def extract_aperture(r, pixco, scale = 1.5, sky_annulus=None, exclude_sectors=None, useapprox=False, silent=False):
     """
     Extract a spectrum using an aperture on the FITS data cube.
     
@@ -571,6 +593,8 @@ def extract_aperture(r, pixco, scale = 1.5, sky_annulus=None, useapprox=False, s
     from numpy import cos, deg2rad
     from astropy.wcs.utils import skycoord_to_pixel
     from astropy.coordinates import SkyCoord
+    from astropy.stats import sigma_clipped_stats
+    import matplotlib.pyplot as plt
     import warnings
     
     #make sure pixco is properly defined
@@ -702,6 +726,7 @@ def extract_aperture(r, pixco, scale = 1.5, sky_annulus=None, useapprox=False, s
         # SKY ANNULUS SUBTRACTION
         # --------------------------------------------------------------
         if sky_annulus is not None:
+            sky_spec = np.zeros(shape[2])
             for k in range(shape[2]):
                 wave = r["x"][2][k]  # wavelength in microns
 
@@ -718,34 +743,39 @@ def extract_aperture(r, pixco, scale = 1.5, sky_annulus=None, useapprox=False, s
 
 
                 sky_w = annulus_weight(xx, yy, 0, 0, psize, rin, rout)
+                if exclude_sectors is not None:
+                    sector_w = sector_mask(xx, yy, 0, 0, exclude_sectors)
 
-
-                sky_spec = np.zeros(shape[2])
-                sky_ck = np.zeros(shape[2])
-
-
-
+                    # Combine annulus + sector mask
+                    sky_w = sky_w * sector_w
+                
+                
+                
                 p = data[:, :, k]
                 w = sky_w
 
 
-                sw = w / np.nansum(w)
-                psky = p * sw
+                sky_pixels = p[w > 0 & np.isfinite(p)]
+                mean, med, std = sigma_clipped_stats(sky_pixels, sigma=3)
+                sky_spec[k] = med
 
 
-                pck = np.ones_like(p)
-                pck[np.isnan(p)] = np.nan
-                pck *= sw
-
-
-                sky_ck[k] = np.nansum(pck)
-                sky_spec[k] = np.nansum(psky)
-
-
-                if sky_spec[k] == 0 or sky_ck[k] < 0.25:
+                if np.isnan(sky_spec[k]) or len(sky_pixels) < 10:
                     sky_spec[k] = np.nan
-                else:
-                    sky_spec[k] /= sky_ck[k]
+
+            #show where the weighted annulus is being applied
+            fig, ax = plt.subplots(figsize=(8,8))
+            ax.imshow(p, origin='lower', cmap='gray')
+
+            # Annulus boundary
+            ax.contour(sky_w > 0, levels=[0.5], colors='black', linewidths=2)
+
+            # Filled annulus
+            ann = np.zeros_like(p)
+            ann[sky_w > 0] = 1
+            ax.imshow(ann, origin='lower', alpha=0.3, cmap='Blues')
+            ax.set_title("Annulus with Sector Mask")
+            plt.show()
             # subtract sky
             s = s - sky_spec
     return s, region, mask, flag, omega   
@@ -936,7 +966,7 @@ def fitLines(wv, spec, peaks):
         if len(contrib) > 1:
             S /= 2
 
-        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, tol = 1e-7)
+        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, tol = 1e-10)
 
         ix_self = np.where(contrib == i)[0][0]
         q['K'][i] = Ko[ix_self]
@@ -974,7 +1004,7 @@ def fitLines(wv, spec, peaks):
 
 ######################################################################################
 
-def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=None, nchunk=1, use_exten=True, verbose = False, savefig=True):
+def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=None, exclude_sectors=None, nchunk=1, use_exten=True, verbose = False, savefig=True):
     '''
     meant to plot and mark peaks from a spectrum.
     creates catalog of significant peaks for a spectrum
@@ -1005,6 +1035,10 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
         If None no sky annulus will be subtracted from the spectrum. when given a number (i.e. 2) 
         will creaate an annulus with inner radius of the number times the radius used for science aperture
         will extend to 1 + the number given (ex. input of 2 will have outer radius 3x the aperture radius.
+    exclude_sectors : array or list like
+        Will mask out sectors of an annulus as defined by user.
+        sector inputs should be given as angles in degrees defined as (deg_min, deg_max)
+        If None will not mask out any sectors (i.e. defaults to None)
     nchunk : int 
         The number of chunks to cut the spectrum into, it defaults to 1. 
         If it is a vector the first and second component will be the start-end
@@ -1076,7 +1110,7 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
 
         snr = snr / 1.5  # MAD conversion
 
-        s, region, mask, flag, omega = extract_aperture(r, pixco, scale, sky_annulus)
+        s, region, mask, flag, omega = extract_aperture(r, pixco, scale, sky_annulus, exclude_sectors)
         if flag == -1:
             return {'Aperture is completely empty'}
         if flag == -2:
@@ -1361,23 +1395,23 @@ def keepLines(file, wave_list, tol=0.05):
 
     fname = file + "-peaklist.txt"
 
-    # --- Step 1: detect number of columns
+     # --- Step 1: detect number of columns
     with open(fname, "r") as fp:
         fp.readline()   # skip % Cube
         fp.readline()   # skip % Region
         ln = fp.readline()  # header with column names
-        header = [line for line in fp if line.startswith("%")]
-    if "Gauss" in ln:
+
+    
         ncols = 16
-    else:
-        ncols = 3
+    
+        
 
     # --- Step 2: load numeric data
     cols = np.loadtxt(
         fname,
         comments="%",
-        skiprows=3,
         usecols=range(ncols),
+        unpack=True
         
     )
 
@@ -1849,7 +1883,7 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
 
 ######## Additional commands ####################
 
-def findLines(fname, outname, wmin, wmax, pixco=None, scale=1.5, snr=5, thr=2, ID=False, vlsr=None, catdir=None):
+def findLines(fname, outname, wmin, wmax, pixco=None, sky_annulus=None, scale=1.5, snr=5, thr=2, ID=False, vlsr=None, catdir=None):
     """
     Extract spectrum from FITS cube and identify peaks within a wavelength range.
     Works like catPeaks, but restricted to [wmin, wmax]. output files are default labeled with 
@@ -1906,7 +1940,7 @@ def findLines(fname, outname, wmin, wmax, pixco=None, scale=1.5, snr=5, thr=2, I
     snr = snr / 1.5  # MAD conversion
 
     # Extract spectrum
-    s, region, mask, flag, omega = extract_aperture(r, pixco, scale)
+    s, region, mask, flag, omega = extract_aperture(r, pixco, scale, sky_annulus)
     if flag != 0:
         return {'flag': flag}
 
@@ -2302,7 +2336,8 @@ def readLineID(filename: str) -> Dict[str, Any]:
 
     return {"vlsr_kms": vlsr_kms, "blocks": blocks}
 
-
+##############################################################################
+################### Plotting Routines ################################################
 
 def plotID(linename, specname, savefig=False, outname=None):
     '''
@@ -2423,6 +2458,67 @@ def plotIDClean(linename, specname, savefig=False, outname=None):
     return
 
 
+def viewFit(file_path, wave_range=None, flux_range=None):
+    '''
+    Viewer to see the extracted spectra, the continuum fit, and the modeled gaussian profiles of peaks.
+    Model is plotted below the spectra to show which peaks have had gaussians fit.
+    
+    Parameters:
+    ------------
+    file_path : str
+        Primary path to where the spectra, model, and continuum data are held
+        Assumes all three have the same name except for specific extensions grabbed when reading
+    wave_range : array
+        Wavelength range to use as an xlim given in the form [x,y] with x as the min and y as the max
+        Defaults to None
+    flux_range : array
+        Flux range to use as a ylim given in the form [x,y] with x as the min and y as the max
+        Defaults to None
+    
+    ------------
+    Returns:
+        Plot of the spectra (in black), the model (blue), and the continuum (red)
+    
+    
+    '''
+    
+    import numpy as np
+    import matplotlib.pyplot as plt
+    
+    #get specific files
+    contdata = file_path + '_cont.txt'
+    modeldata = file_path + '_model.txt'
+    specdata = file_path + '_spec.txt'
+    
+    contin = np.loadtxt(contdata)
+    modeldat = np.loadtxt(modeldata)
+    basedat = np.loadtxt(specdata)
+    a, b = contin[:, 0], contin [:, 1]
+
+    j, k = modeldat[:, 0], modeldat[:, 1]
+
+    x, y = basedat[:, 0], basedat[:, 1]
+
+
+    plt.figure(figsize=(9,8))
+    plt.plot(x, y, color='k', lw=1, zorder=100, label = 'spectra')
+    plt.plot(j, k, color='b', label = 'model')
+    plt.plot(a, b, color='r', zorder=9, label = 'continuum')
+    if wave_range is not None:
+        if len(wave_range) != 2:
+            raise ValueError(' wave_range must be given as [x,y] with x as the minimum and y as the maximum')
+        plt.xlim(wave_range[0], wave_range[1])
+    if flux_range is not None:
+        if len(flux_range) != 2:
+            raise ValueError(' flux_range must be given as [x,y] with x as the minimum and y as the maximum')
+        plt.ylim(flux_range[0],flux_range[1])
+
+    plt.xlabel('Wavelength (um)')
+    plt.ylabel('Surface Brightness (MJy/sr)')
+    plt.legend()
+    plt.show()
+    return
+
 #######################################################################
 
 #####################List editors ######################################
@@ -2527,7 +2623,7 @@ def getLines(peaklist, linelist, species, outfile):
         print(f"⚠️ Warning: mismatch between wave ({len(wave)}) and best_labels ({len(best_labels)}) lengths")
     
     with open(f'{outfile}-{species}_peaklist.txt', 'w') as fp:
-            fp.write("%% ID wave(um) peak(MJy/sr) GaussK(MJy/sr) GaussFWHM(um) GaussX(um) Intensity(W/m2/sr) Flux(W/m2)" 
+            fp.write("%% ID wave(um) peak(MJy/sr) GaussK(MJy/sr) GaussFWHM(um) GaussX(um) Intensity(W/m2/sr) Flux(W/m2) " 
                      "ApRadius(arcsec) SolidAngle(omega) eGaussK eGaussS eGaussX eIntensity eFlux flag\n")
             for i in range(len(wave)):
                 if best_labels[i].startswith(species):
@@ -2536,14 +2632,14 @@ def getLines(peaklist, linelist, species, outfile):
                          f"{gaussFWHM[i]:8.4f} {gaussx[i]:8.4f} {Inten[i]:8.4g} "
                          f"{Flux[i]:8.4g} {Ap[i]:8.4g} {omega[i]:8.4g} "
                          f"{egaussk[i]:8.4g} {egaussS[i]:8.4g} {egaussx[i]:8.4g} "
-                         f"{eInten[i]:8.4g} {eflux[i]:8.4g} {flag[i]}\n")
+                         f"{eInten[i]:8.4g} {eflux[i]:8.4g} {flag[i]} \n")
                 elif next_labels[i].startswith(species):
                     label = next_labels[i]
                     fp.write(f"{label} {wave[i]:8.4f} {peak_inten[i]:12.4f} {gaussk[i]:12.4f} "
                          f"{gaussFWHM[i]:8.4f} {gaussx[i]:8.4f} {Inten[i]:8.4g} "
                          f"{Flux[i]:8.4g} {Ap[i]:8.4g} {omega[i]:8.4g} "
                          f"{egaussk[i]:8.4g} {egaussS[i]:8.4g} {egaussx[i]:8.4g} "
-                         f"{eInten[i]:8.4g} {eflux[i]:8.4g} {flag[i]}\n")
+                         f"{eInten[i]:8.4g} {eflux[i]:8.4g} {flag[i]} \n")
     
     
     return    
