@@ -16,6 +16,9 @@ It is developed with JWST data in mind but should be applicable to all IR data.
 - **findSpecies** - Searches ID'd lines for all lines of a given species (eg. CO, H2).
 - **readLineID** - Reads and parses line identification results into a Python dictionary.
 - **plotID** - Quick plotting of spectra with identified lines marked and labeled.
+- **viewFit** - Quick plotting of spectra, the modeled lines and the continuum.
+- **combList** - Simple way to combine lists from multiple channels into a master list.
+- **getLines** - Combines the peaklist and linelist for a defined line(eg. HI) into a single list with ID'd lines and their properties.
 
 
 ## How to Install 
@@ -121,6 +124,9 @@ Adapted into Python and additional commands by: K. Donaghue
 This code is open source and open to contribution
 
 ### Current Contributors
+Keaton Donaghue
+Alberto Bolatto
+Rebecca Levy
 
 
 
