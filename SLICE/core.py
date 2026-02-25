@@ -2,7 +2,7 @@
 Code originally written in MATLAB by: A. Bolatto
 
 Adapted and modified for use in Python by: K. Donaghue
-Last modified: 2/13/2026
+Last modified: 2/20/2026
 
 This code is best applied to JWST or similar IR data
 
@@ -44,9 +44,10 @@ import numpy as np
 import re
 from typing import List, Dict, Any
 import os
-
+import IPython
 import logging
 from logging import config
+
 
 
 ########################################################
@@ -162,7 +163,7 @@ def _normalize_cube_to_yxspec(data, wcs1, wcs2, spec_len):
 
 
 
-def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1e-3, verbose=False):
+def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1e-3, verbose=False, showfit = False):
     """
     Fit one or more Gaussian functions to data using Levenberg–Marquardt optimization.
     
@@ -202,10 +203,12 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
     """
     
     import numpy as np
+    import matplotlib.pyplot as plt
     from numpy.linalg import solve, inv
     
     # Convert inputs
     x, y = np.asarray(x, float), np.asarray(y, float)
+    K_og, S_og, X0_og = np.asarray(K, float), np.asarray(S, float), np.asarray(X0, float)
     K, S, X0 = np.asarray(K, float), np.asarray(S, float), np.asarray(X0, float)
     b, d = len(K), len(x)
     
@@ -227,9 +230,11 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
 
     # Initial model and chi2
     ymodel = model(K, S, X0)
+    ymodel_og = model(K_og, S_og, X0_og)
+    
     delta = y_mat - ymodel
     chi2 = np.sum(delta**2)
-    
+    chi2_og = chi2.copy()
     # Damping parameter
     L = lambda_init
     err_code = 0
@@ -253,9 +258,9 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
                 dKj, dSj, dX0j = derK[j], derS[j], derX0[j]
                 diagV = (i == j)
                 alpha[3*i:3*i+3, 3*j:3*j+3] = np.array([
-                    [np.sum(dKi * dKj) + L*diagV, np.sum(dKi * dSj), np.sum(dKi * dX0j)],
-                    [np.sum(dSi * dKj), np.sum(dSi * dSj) + L*diagV, np.sum(dSi * dX0j)],
-                    [np.sum(dX0i * dKj), np.sum(dX0i * dSj), np.sum(dX0i * dX0j) + L*diagV]
+                    [np.sum(dKi * dKj *(1+L*diagV)), np.sum(dKi * dSj), np.sum(dKi * dX0j)],
+                    [np.sum(dSi * dKj), np.sum(dSi * dSj * (1+L*diagV)), np.sum(dSi * dX0j)],
+                    [np.sum(dX0i * dKj), np.sum(dX0i * dSj), np.sum(dX0i * dX0j * (1+L*diagV))]
                 ])
 
         # Solve for parameter step
@@ -294,6 +299,7 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
     # Collapse multi-component fit into final ymodel
     if b > 1:
         ymodel = np.sum(ymodel, axis=0)
+        ymodel_og = np.sum(ymodel_og, axis=0)
 
     # Reduced chi-square
     dof = max(1, d - 3*b)
@@ -302,7 +308,23 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
     # Compute covariance matrix and parameter uncertainties
     emat = inv(alpha)
     epar = np.sqrt(chi2 * np.abs(np.diag(emat)))
+    
+    
+    if showfit is True:
+        plt.plot(x,y, label='spectra')
+        if np.shape(ymodel) == (1, 31):
+            plt.plot(x, ymodel[0], label = 'model')
+        else:
+            plt.plot(x, ymodel, label='model')
+        if np.shape(ymodel_og) == (1, 31):
+            plt.plot(x,ymodel_og[0], label = 'Guess fit')
+        else:
+            plt.plot(x, ymodel_og, label = 'Guess fit')
+        plt.legend()
+        plt.show()
 
+        
+    #IPython.core.debugger.set_trace()
     return K, S, X0, chi2, ymodel, err_code, epar
 
 
@@ -812,7 +834,7 @@ def sigChans(xx, yy, noise, snr, thr):
     if len(ix) == 0:
         return np.empty((0, 2))
 
-    dix = np.diff(ix)
+    dix = np.diff(ix) # difference between significant channel positions
     ul = np.append(np.where(dix > thr)[0] + 1, len(ix))  # chunk breaks
     npk = 0
 
@@ -882,7 +904,7 @@ def sigChans(xx, yy, noise, snr, thr):
 
 
 
-def fitLines(wv, spec, peaks):
+def fitLines(wv, spec, peaks, showfit):
     '''
     Goes through peak list and fits gaussians to them
     removes continuum. produces array with the gaussian
@@ -965,9 +987,11 @@ def fitLines(wv, spec, peaks):
 
         if len(contrib) > 1:
             S /= 2
-
-        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, tol = 1e-10)
-
+        
+        
+        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, tol = 1e-10, showfit=showfit)
+       
+        
         ix_self = np.where(contrib == i)[0][0]
         q['K'][i] = Ko[ix_self]
         q['eK'][i] = epar[ix_self * 3]
@@ -978,11 +1002,11 @@ def fitLines(wv, spec, peaks):
 
         nu = c / (1e-6 * q['X0'][i])
         dnu = nu * q['S'][i] / q['X0'][i]
-        ednu =  np.sqrt(
-            (c**2 / q['X0'][i]**4) * q['eS'][i]**2 +
-            (c**2 * 4 * q['S'][i]**2 / q['X0'][i]**6) * q['eX0'][i]**2
-        )
-        
+        #ednu =  np.sqrt(
+         #   (c**2 / (1e-6 * q['X0'][i])**4) * (1e-6 * q['eS'][i])**2 +
+         #   (c**2 * 4 * (1e-6 * q['S'][i])**2 / (1e-6 * q['X0'][i])**6) * (1e-6 * q['eX0'][i]) q**2
+        #)
+        ednu =  (nu / q['X0'][i]) * np.sqrt( (q['eS'][i])**2 + 4 * ((q['S'][i]**2) / q['X0'][i]**2) * q['eX0'][i]**2 )
 
         q['area'][i] = 1e-20 * np.sqrt(2 * np.pi) * q['K'][i] * dnu
         q['earea'][i] = 1e-20 * np.sqrt(2 * np.pi) * np.sqrt(
@@ -999,12 +1023,14 @@ def fitLines(wv, spec, peaks):
             q['flag'][i] += 32
 
         ymodel += q['K'][i] * np.exp(-((wv - q['X0'][i]) / (np.sqrt(2) * q['S'][i]))**2)
+        
+        #IPython.core.debugger.set_trace()
 
     return q, ymodel, smo
 
 ######################################################################################
 
-def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=None, exclude_sectors=None, nchunk=1, use_exten=True, verbose = False, savefig=True):
+def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=None, exclude_sectors=None, nchunk=1, use_exten=True, showfit=False, verbose = False, savefig=True):
     '''
     meant to plot and mark peaks from a spectrum.
     creates catalog of significant peaks for a spectrum
@@ -1046,6 +1072,8 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
     use_exten : bool
         adds arguement to rfits routine as to where to pull the data. 
         Defaults to True and defaults to reading the first extension.
+    showfit : bool
+        shows gaussian fit (True) or not (False) (Default: False
     verbose : bool
         Print list of peaks to logger (True) or not (False) (Default: False)
      savefig : bool
@@ -1150,8 +1178,10 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
         scc = np.median(np.abs(cc - np.median(cc))) / 0.6745  # MAD
 
         p = sigChans(dx, cc, scc, snr, thr)
-        q, ymo, cont = fitLines(xx, yy, p)
+        q, ymo, cont = fitLines(xx, yy, p,showfit)
         
+        
+        # add break line to see if what is happening with the fitter
         flux_chunk = np.zeros(len(q['area']))
         eflux_chunk = np.zeros(len(q['area']))
         omega_chunk =np.zeros(len(q['area']))
@@ -1301,8 +1331,10 @@ def recomputeLines(file):
     c = 3e8
     nu = c / (1e-6 * q["X0"])
     dnu = nu * q["S"] / q["X0"]
-    ednu = np.sqrt((q["S"]**2 / q["X0"]**4) * (q["eS"]**2) +
-               (4 * q["S"]**2 / q["X0"]**6) * (q["eX0"]**2))
+    #ednu = np.sqrt((q["S"]**2 / q["X0"]**4) * (q["eS"]**2) + old wrong error propagation
+               #(4 * q["S"]**2 / q["X0"]**6) * (q["eX0"]**2))
+    
+    ednu =  (nu / q['X0']) * np.sqrt( (q['eS'])**2 + 4 * ((q['S']**2) / q['X0']**2) * q['eX0']**2 )
     area = 1e-20 * np.sqrt(2 * np.pi) * q["K"] * dnu
     earea = 1e-20 * np.sqrt(2 * np.pi) * np.sqrt((dnu**2) * (q["eK"]**2) +
                                              (q["K"]**2) * (ednu**2))
@@ -2458,7 +2490,7 @@ def plotIDClean(linename, specname, savefig=False, outname=None):
     return
 
 
-def viewFit(file_path, wave_range=None, flux_range=None):
+def viewFit(file_path, wave_range=None, flux_range=None, scale_model=False, showline=None):
     '''
     Viewer to see the extracted spectra, the continuum fit, and the modeled gaussian profiles of peaks.
     Model is plotted below the spectra to show which peaks have had gaussians fit.
@@ -2474,6 +2506,12 @@ def viewFit(file_path, wave_range=None, flux_range=None):
     flux_range : array
         Flux range to use as a ylim given in the form [x,y] with x as the min and y as the max
         Defaults to None
+    scale_model : bool
+        Set to true if you want to display the model on top of the spectra (i.e. scales the model by the continuum)
+        Defaults to False
+    showline : float
+        simple way to see where a particular line is by inputting its wavelength
+        defaults to None
     
     ------------
     Returns:
@@ -2502,8 +2540,13 @@ def viewFit(file_path, wave_range=None, flux_range=None):
 
     plt.figure(figsize=(9,8))
     plt.plot(x, y, color='k', lw=1, zorder=100, label = 'spectra')
-    plt.plot(j, k, color='b', label = 'model')
+    if scale_model is True:
+        plt.plot(j, k+b, color = 'b', label ='model')
+    else:
+        plt.plot(j, k, color='b', label = 'model')
     plt.plot(a, b, color='r', zorder=9, label = 'continuum')
+    if showline is not None:
+        plt.axvline(showline)
     if wave_range is not None:
         if len(wave_range) != 2:
             raise ValueError(' wave_range must be given as [x,y] with x as the minimum and y as the maximum')

@@ -16,7 +16,7 @@ from .core import (
 )
 
 # Package version
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "core",        # allows `slice.core.catPeaks`
