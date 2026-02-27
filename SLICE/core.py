@@ -231,10 +231,6 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
     # Initial model and chi2
     ymodel = model(K, S, X0)
     ymodel_og = model(K_og, S_og, X0_og)
-    
-    #if b > 1:
-     #   delta = np.sum(y_mat - ymodel)
-    #else:
     delta = y_mat - ymodel
     chi2 = np.sum(delta**2)
     chi2_og = chi2.copy()
@@ -279,10 +275,7 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
 
         # Evaluate new model
         newymodel = model(newK, newS, newX0)
-        if b > 1:
-            newdelta = np.sum(y_mat - newymodel)
-        else:
-            newdelta = y_mat - newymodel
+        newdelta = y_mat - newymodel
         newchi2 = np.sum(newdelta**2)
         
          #get conditionals to accept step
@@ -918,7 +911,7 @@ def sigChans(xx, yy, noise, snr, thr):
 
 
 
-def fitLines(wv, spec, peaks, showfit):
+def fitLines(wv, spec, peaks, bounds, showfit):
     '''
     Goes through peak list and fits gaussians to them
     removes continuum. produces array with the gaussian
@@ -1002,9 +995,11 @@ def fitLines(wv, spec, peaks, showfit):
         if len(contrib) > 1:
             S /= 2
         
-        bounds = ([[0.5*K, 0, 0.9*X0  ], [1.5*K, S ,1.1*X0]])
-        
-        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, bounds=bounds, tol = 1e-10, showfit=showfit)
+        if bounds != None:
+            boundary = ([K*bounds[0][0], S*bounds[0][1], X0*bounds[0][2]] , [K*bounds[1][0], S*bounds[1][1], X0*bounds[1][2]])
+        else:
+            boundary = bounds
+        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, bounds=boundary, tol = 1e-10, showfit=showfit)
        
         
         ix_self = np.where(contrib == i)[0][0]
@@ -1045,7 +1040,7 @@ def fitLines(wv, spec, peaks, showfit):
 
 ######################################################################################
 
-def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=None, exclude_sectors=None, nchunk=1, use_exten=True, showfit=False, verbose = False, savefig=True):
+def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=None, exclude_sectors=None, nchunk=1, use_exten=True, bounds=None, showfit=False, verbose = False, savefig=True):
     '''
     meant to plot and mark peaks from a spectrum.
     creates catalog of significant peaks for a spectrum
@@ -1062,7 +1057,7 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
         component is a row number and the second a column number for the pixel in
         the data, and extract that spectrum to analyze. If it has the form
         ([X1 , X2, X3], [Y1, Y2, Y3]), it will assume that the first row is the list of 
-        row numbers and the second thelist of column numbers of the area to average over. 
+        row numbers and the second the list of column numbers of the area to average over. 
         If it is a list with two strings and a float (i.e. [RA, Dec, rad]) it will extract a spectrum at 
         that RA,DEC (colon-separated sexagesimal) in an aperture of that radius in arcsec.
         For a conical aperture input 'auto' for the rad. Currently supported for MIRI MRS spectra
@@ -1087,6 +1082,9 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
     use_exten : bool
         adds arguement to rfits routine as to where to pull the data. 
         Defaults to True and defaults to reading the first extension.
+    bounds : array_like
+        Array containing lists the lower and upper bounds for each parameter to be scaled by (e.g., [[K_min, S_min, X0_min],[K_max, S_max, X0_max]]) (Default: None)
+        Inputs should be given as floats i.e. 1.5 for 1.5 * K etc.
     showfit : bool
         shows gaussian fit (True) or not (False) (Default: False
     verbose : bool
@@ -1105,62 +1103,73 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
     import matplotlib.pyplot as plt
     import os
     
-    
-    #test the extention of the input to see how to handle
-    ext = os.path.splitext(fname)[1].lower()
-    
-    
-    # for 1d spectrum input as a .txt or .csv file
-    if ext in ['.txt', '.csv']:
-        try:
-            data = np.loadtxt(fname, comments='#', delimiter=',' if ext == '.csv' else None)
-        except Exception as e:
-            raise ValueError(f"Could not read {fname}: {e}")
-        
-        ncols = data.shape[1]
-        if ncols < 2:
-            raise ValueError("File must contain at least two columns: wavelength and flux.")
-        #assume the data is formated as wavelength then flux
-        x = data[:, 0]
-        y = data[:, 1]
-        err = data[:, 2] if ncols >= 3 else None
-        
-        r = {'bunit': 'arbitrary', 'x': [None, None, x]}  # dummy metadata
+    if isinstance(fname, list):
+        if np.ndim(fname) != 2:
+            raise ValueError("expecting list in form of [wavelength, flux]")
+        x = fname[0]
+        y = fname[1]
+        if len(x) != len(y):
+            raise ValueError("wavelength and flux inputs must have the same length")
         region = '1D spectrum'
+        r = {'bunit': 'arbitrary', 'x': [None, None, x]}  # dummy metadata
         flag = 0
-    
     else:
-        # Handle input
-        if isinstance(fname, str):
-            if use_exten == True:
-                #assumes fits cube has additional extension where data is housed
-                r = rfits(fname, 'xten1')
-            else:
-                r = rfits(fname)
+    
+        #test the extention of the input to see how to handle
+        ext = os.path.splitext(fname)[1].lower()
+
+
+        # for 1d spectrum input as a .txt or .csv file
+        if ext in ['.txt', '.csv']:
+            try:
+                data = np.loadtxt(fname, comments='#', delimiter=',' if ext == '.csv' else None)
+            except Exception as e:
+                raise ValueError(f"Could not read {fname}: {e}")
+
+            ncols = data.shape[1]
+            if ncols < 2:
+                raise ValueError("File must contain at least two columns: wavelength and flux.")
+            #assume the data is formated as wavelength then flux
+            x = data[:, 0]
+            y = data[:, 1]
+            err = data[:, 2] if ncols >= 3 else None
+
+            r = {'bunit': 'arbitrary', 'x': [None, None, x]}  # dummy metadata
+            region = '1D spectrum'
+            flag = 0
+
         else:
-            r = fname
+            # Handle input
+            if isinstance(fname, str):
+                if use_exten == True:
+                    #assumes fits cube has additional extension where data is housed
+                    r = rfits(fname, 'xten1')
+                else:
+                    r = rfits(fname)
+            else:
+                r = fname
 
-        mloop = False
-        if thr < 0:
-            thr = 2
-            mloop = True
+            mloop = False
+            if thr < 0:
+                thr = 2
+                mloop = True
 
-        # Handle pixco / snr overload
-        if pixco is None:
-            pixco = 0
-        elif isinstance(pixco, (int, float)) and snr == 5:
-            snr = pixco
+            # Handle pixco / snr overload
+            if pixco is None:
+                pixco = 0
+            elif isinstance(pixco, (int, float)) and snr == 5:
+                snr = pixco
 
-        snr = snr / 1.5  # MAD conversion
+            snr = snr / 1.5  # MAD conversion
 
-        s, region, mask, flag, omega = extract_aperture(r, pixco, scale, sky_annulus, exclude_sectors)
-        if flag == -1:
-            return {'Aperture is completely empty'}
-        if flag == -2:
-            print("Warning: spectrum contains NaNs, continuing with valid channels only.")
+            s, region, mask, flag, omega = extract_aperture(r, pixco, scale, sky_annulus, exclude_sectors)
+            if flag == -1:
+                return {'Aperture is completely empty'}
+            if flag == -2:
+                print("Warning: spectrum contains NaNs, continuing with valid channels only.")
 
-        x = np.array(r['x'][2])[~np.isnan(s)]
-        y = s[~np.isnan(s)]
+            x = np.array(r['x'][2])[~np.isnan(s)]
+            y = s[~np.isnan(s)]
 
     if isinstance(nchunk, (list, tuple, np.ndarray)) and len(nchunk) == 2:
         stw, enw = nchunk
@@ -1193,7 +1202,7 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
         scc = np.median(np.abs(cc - np.median(cc))) / 0.6745  # MAD
 
         p = sigChans(dx, cc, scc, snr, thr)
-        q, ymo, cont = fitLines(xx, yy, p,showfit)
+        q, ymo, cont = fitLines(xx, yy, p, bounds, showfit)
         
         
         # add break line to see if what is happening with the fitter
@@ -1205,12 +1214,15 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
                 flux_chunk[j] = np.nan
                 eflux_chunk[j] = np.nan
                 continue
-
-            Omega_at_line = omega[np.argmin(np.abs(xx - q['X0'][j]))]
-            omega_chunk[j] = Omega_at_line
-            flux_chunk[j] = q['area'][j] * Omega_at_line   # W/m^2
-            eflux_chunk[j] = q['earea'][j] * Omega_at_line
-        
+            if pixco is not None:
+                Omega_at_line = omega[np.argmin(np.abs(xx - q['X0'][j]))]
+                omega_chunk[j] = Omega_at_line
+                flux_chunk[j] = q['area'][j] * Omega_at_line   # W/m^2
+                eflux_chunk[j] = q['earea'][j] * Omega_at_line
+            else:
+                omega_chunk[j] = -0
+                flux_chunk[j] = -0
+                eflux_chunk[j] = -0
         np_detected += len(p)
         pp.extend(p)
         if savefig == True:
@@ -1253,7 +1265,10 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
     # Write output files
     s2f = np.sqrt(np.log(256))
     with open(f'{outname}-peaklist.txt', 'w') as fp:
-        fp.write(f"%% Cube: {fname}\n")
+        if isinstance(fname, str):
+            fp.write(f"%% Cube: {fname}\n")
+        else:
+            fp.write(f"%% Region spaning: {np.min(x)} {np.max(x)}\n")
         fp.write(f"%% Region: {region}\n")
         if region == 'pixel':
             fp.write(f"pixel {pixco[0]}, {pixco[1]}\n")
@@ -1263,7 +1278,7 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
         elif region == 'circle' and isinstance(pixco, list):
             fp.write(f"%% circle {pixco[0]},{pixco[1]},{pixco[2]}\n")
         else:
-            fp.write("undefined\n")
+            fp.write("%%undefined\n")
 
         fp.write("%% num wave(um) peak(MJy/sr) GaussK(MJy/sr) GaussFWHM(um) GaussX(um) Intensity(W/m2/sr) Flux(W/m2) ApRadius(arcsec) SolidAngle(omega) eGaussK eGaussS eGaussX eIntensity eFlux flag\n")
         for i in range(np_detected):
@@ -1271,11 +1286,14 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
             Inten = q_result['area'][i]
             Flux = q_result['flux'][i]
             eFlux = q_result['eflux'][i]
-            rad = pixco[2]
-            if rad == "auto":
-                rad_arcsec = psfranger(pp[i][0],scale, mode="MRSFWHMLaw2023")
+            if pixco is not None:
+                rad = pixco[2]
+                if rad == "auto":
+                    rad_arcsec = psfranger(pp[i][0],scale, mode="MRSFWHMLaw2023")
+                else:
+                    rad_arcsec = float(rad)   # user-specified arcsec
             else:
-                rad_arcsec = float(rad)   # user-specified arcsec
+                rad_arcsec = -0
 
             eS = q_result['eS'][i] * s2f
             fp.write(f"{i+1:3d} {pp[i][0]:8.4f} {pp[i][1]:12.4f} {q_result['K'][i]:12.4f} "
