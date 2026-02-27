@@ -232,13 +232,16 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
     ymodel = model(K, S, X0)
     ymodel_og = model(K_og, S_og, X0_og)
     
+    #if b > 1:
+     #   delta = np.sum(y_mat - ymodel)
+    #else:
     delta = y_mat - ymodel
     chi2 = np.sum(delta**2)
     chi2_og = chi2.copy()
     # Damping parameter
     L = lambda_init
     err_code = 0
-    
+   
     # Main LM loop
     for it in range(max_iter):
         # Derivatives
@@ -276,7 +279,10 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
 
         # Evaluate new model
         newymodel = model(newK, newS, newX0)
-        newdelta = y_mat - newymodel
+        if b > 1:
+            newdelta = np.sum(y_mat - newymodel)
+        else:
+            newdelta = y_mat - newymodel
         newchi2 = np.sum(newdelta**2)
         
          #get conditionals to accept step
@@ -286,10 +292,10 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
             converge_val = (chi2 - newchi2) / newchi2
             if verbose:
                 print(f"Iter {it:3d} | chi2={newchi2:.4e} | Δχ²/χ²={converge_val:.2e} | L={L:.2e}")
-            if converge_val < tol:
-                break  # Converged
             L /= 10
             K, S, X0, ymodel, delta, chi2 = newK, newS, newX0, newymodel, newdelta, newchi2
+            if converge_val < tol:
+                break  # Converged
         else:  # Reject step
             L *= 10
             if L > 1e3:
@@ -298,8 +304,11 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
 
     # Collapse multi-component fit into final ymodel
     if b > 1:
-        ymodel = np.sum(ymodel, axis=0)
-        ymodel_og = np.sum(ymodel_og, axis=0)
+        ymodel_sum = np.sum(ymodel, axis=0)
+        ymodel_og_sum = np.sum(ymodel_og, axis=0)
+    else:
+        ymodel_sum = ymodel
+        ymodel_og_sum = ymodel_og
 
     # Reduced chi-square
     dof = max(1, d - 3*b)
@@ -313,18 +322,23 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
     if showfit is True:
         plt.plot(x,y, label='spectra')
         if np.shape(ymodel) == (1, 31):
-            plt.plot(x, ymodel[0], label = 'model')
+            plt.plot(x, ymodel_sum[0], label = 'model')
         else:
-            plt.plot(x, ymodel, label='model')
-        if np.shape(ymodel_og) == (1, 31):
-            plt.plot(x,ymodel_og[0], label = 'Guess fit')
+            plt.plot(x, ymodel_sum, label='model')
+        if np.shape(ymodel_og_sum) == (1, 31):
+            plt.plot(x,ymodel_og_sum[0], label = 'Guess fit')
         else:
-            plt.plot(x, ymodel_og, label = 'Guess fit')
+            plt.plot(x, ymodel_og_sum, label = 'Guess fit')
+        
+        if np.shape(ymodel) == (3, 31):
+            plt.plot(x,ymodel[0], label='first component')
+            plt.plot(x,ymodel[1], label='second component')
+            plt.plot(x,ymodel[2], label='third component')
         plt.legend()
         plt.show()
 
-        
-    #IPython.core.debugger.set_trace()
+    #if err_code == 1 or err_code == 5:  
+        #IPython.core.debugger.set_trace()
     return K, S, X0, chi2, ymodel, err_code, epar
 
 
@@ -988,8 +1002,9 @@ def fitLines(wv, spec, peaks, showfit):
         if len(contrib) > 1:
             S /= 2
         
+        bounds = ([[0.5*K, 0, 0.9*X0  ], [1.5*K, S ,1.1*X0]])
         
-        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, tol = 1e-10, showfit=showfit)
+        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, bounds=bounds, tol = 1e-10, showfit=showfit)
        
         
         ix_self = np.where(contrib == i)[0][0]
@@ -1277,7 +1292,7 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
 
 ###################################################
 #########Commands to manipulate line list##########
-def recomputeLines(file):
+def recomputeLines(file,showfit):
     """
     Will recompute the peak list, the continuum, and, model
         based on new spec list i.e. when lines are cut redo model
@@ -1324,7 +1339,7 @@ def recomputeLines(file):
     u = np.loadtxt(f"{file}_spec.txt")
 
     # --- Fit lines ---
-    q, ymo, cont = fitLines(u[:, 0], u[:, 1], np.column_stack([C[1], C[2]]))
+    q, ymo, cont = fitLines(u[:, 0], u[:, 1], np.column_stack([C[1], C[2]]), showfit)
 
     # --- Derived quantities ---
     s2f = np.sqrt(np.log(256))
@@ -1405,7 +1420,7 @@ def recomputeLines(file):
 
 
 
-def keepLines(file, wave_list, tol=0.05):
+def keepLines(file, wave_list, tol=0.05, showfit=False):
     """
     Keep lines near a list of wavelengths.
 
@@ -1418,6 +1433,8 @@ def keepLines(file, wave_list, tol=0.05):
     tol : float or array_like, optional
         Tolerance(s) in um around each wavelength.
         If scalar, applied to all. If array, must match wave_list.
+    showfit : bool
+        Set to true to view the gaussian fitting of lines. Defaults to False
     
     returns
     -------
@@ -1481,13 +1498,13 @@ def keepLines(file, wave_list, tol=0.05):
 
     
     print(f'Written {outname}')
-    recomputeLines(file)
+    recomputeLines(file,showfit)
     return
 
 
 
 
-def cullLines(file, remove_list):
+def cullLines(file, remove_list, showfit=False):
     """
     Remove specific line indices from a peaklist and force creation of
     an '-ed' peaklist file.
@@ -1498,6 +1515,8 @@ def cullLines(file, remove_list):
         Base filename (without -peaklist suffix).
     remove_list : array_like
         List of line indices to remove.
+    showfit : bool
+        Set to true to view the gaussian fitting of lines. Defaults to False
     
     returns
     -------
@@ -1541,7 +1560,7 @@ def cullLines(file, remove_list):
         np.savetxt(f, np.column_stack(cols), fmt="%-12.6g")
 
     print(f"Written {outname} with {len(cols[0])} lines kept")
-    recomputeLines(file)
+    recomputeLines(file,showfit)
     return
 
 
@@ -1915,7 +1934,7 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
 
 ######## Additional commands ####################
 
-def findLines(fname, outname, wmin, wmax, pixco=None, sky_annulus=None, scale=1.5, snr=5, thr=2, ID=False, vlsr=None, catdir=None):
+def findLines(fname, outname, wmin, wmax, pixco=None, sky_annulus=None, scale=1.5, snr=5, thr=2, showfit=False, ID=False, vlsr=None, catdir=None):
     """
     Extract spectrum from FITS cube and identify peaks within a wavelength range.
     Works like catPeaks, but restricted to [wmin, wmax]. output files are default labeled with 
@@ -1938,6 +1957,8 @@ def findLines(fname, outname, wmin, wmax, pixco=None, sky_annulus=None, scale=1.
         The scale factor to multiply the FWHM from the conical aperture to account for full PSF. defaults to 1.5
     snr, thr : float
         Peak finding parameters.(see catPeaks)
+    showfit : bool
+        Set to true to view the gaussian fitting of lines. Defaults to False
     ID : Bool
         If user wants to perform lineID also set True.
     vlsr: float
@@ -1993,7 +2014,7 @@ def findLines(fname, outname, wmin, wmax, pixco=None, sky_annulus=None, scale=1.
     scc = np.median(np.abs(cc - np.median(cc))) / 0.6745
     p = sigChans(dx, cc, scc, snr, thr)
 
-    q_result, ymo, cont = fitLines(xx, yy, p)
+    q_result, ymo, cont = fitLines(xx, yy, p, showfit)
     
     flux_chunk = np.zeros(len(q_result['area']))
     eflux_chunk = np.zeros(len(q_result['area']))
