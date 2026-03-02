@@ -231,7 +231,10 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
     # Initial model and chi2
     ymodel = model(K, S, X0)
     ymodel_og = model(K_og, S_og, X0_og)
-    delta = y_mat - ymodel
+    if b > 1: 
+        delta = np.sum(y_mat - ymodel, axis = 0)
+    else:
+        delta = (y_mat - ymodel).ravel()
     chi2 = np.sum(delta**2)
     chi2_og = chi2.copy()
     # Damping parameter
@@ -249,12 +252,12 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
         alpha = np.zeros((3*b, 3*b))
         beta = np.zeros((3*b, 1))
         for i in range(b):
-            dKi, dSi, dX0i = derK[i], derS[i], derX0[i]
-            beta[3*i:3*i+3, 0] = [np.sum(delta[i] * dKi),
-                                  np.sum(delta[i] * dSi),
-                                  np.sum(delta[i] * dX0i)]
+            dKi, dSi, dX0i = derK[i, :], derS[i, :], derX0[i, :]
+            beta[3*i:3*i+3, 0] = [np.sum(delta * dKi),
+                                  np.sum(delta * dSi),
+                                  np.sum(delta * dX0i)]
             for j in range(b):
-                dKj, dSj, dX0j = derK[j], derS[j], derX0[j]
+                dKj, dSj, dX0j = derK[j, :], derS[j, :], derX0[j, :]
                 diagV = (i == j)
                 alpha[3*i:3*i+3, 3*j:3*j+3] = np.array([
                     [np.sum(dKi * dKj *(1+L*diagV)), np.sum(dKi * dSj), np.sum(dKi * dX0j)],
@@ -275,7 +278,10 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
 
         # Evaluate new model
         newymodel = model(newK, newS, newX0)
-        newdelta = y_mat - newymodel
+        if b > 1:
+            newdelta = np.sum(y_mat - newymodel, axis=0)
+        else:
+            newdelta = (y_mat - newymodel).ravel()
         newchi2 = np.sum(newdelta**2)
         
          #get conditionals to accept step
@@ -322,17 +328,12 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
             plt.plot(x,ymodel_og_sum[0], label = 'Guess fit')
         else:
             plt.plot(x, ymodel_og_sum, label = 'Guess fit')
-        
-        if np.shape(ymodel) == (3, 31):
-            plt.plot(x,ymodel[0], label='first component')
-            plt.plot(x,ymodel[1], label='second component')
-            plt.plot(x,ymodel[2], label='third component')
         plt.legend()
         plt.show()
 
     #if err_code == 1 or err_code == 5:  
-        #IPython.core.debugger.set_trace()
-    return K, S, X0, chi2, ymodel, err_code, epar
+    #IPython.core.debugger.set_trace()
+    return K, S, X0, chi2, ymodel_sum, err_code, epar
 
 
 
@@ -999,7 +1000,7 @@ def fitLines(wv, spec, peaks, bounds, showfit):
             boundary = ([K*bounds[0][0], S*bounds[0][1], X0*bounds[0][2]] , [K*bounds[1][0], S*bounds[1][1], X0*bounds[1][2]])
         else:
             boundary = bounds
-        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, bounds=boundary, tol = 1e-10, showfit=showfit)
+        Ko, So, X0o, chi2, yz, err, epar = gaussmfit(wvreg, spreg, K, S, X0, bounds=boundary, tol = 1e-7, showfit=showfit)
        
         
         ix_self = np.where(contrib == i)[0][0]
@@ -1310,7 +1311,7 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
 
 ###################################################
 #########Commands to manipulate line list##########
-def recomputeLines(file,showfit):
+def recomputeLines(file,showfit,bounds):
     """
     Will recompute the peak list, the continuum, and, model
         based on new spec list i.e. when lines are cut redo model
@@ -1357,7 +1358,7 @@ def recomputeLines(file,showfit):
     u = np.loadtxt(f"{file}_spec.txt")
 
     # --- Fit lines ---
-    q, ymo, cont = fitLines(u[:, 0], u[:, 1], np.column_stack([C[1], C[2]]), showfit)
+    q, ymo, cont = fitLines(u[:, 0], u[:, 1], np.column_stack([C[1], C[2]]), showfit=showfit,bounds=bounds)
 
     # --- Derived quantities ---
     s2f = np.sqrt(np.log(256))
@@ -1438,7 +1439,7 @@ def recomputeLines(file,showfit):
 
 
 
-def keepLines(file, wave_list, tol=0.05, showfit=False):
+def keepLines(file, wave_list, tol=0.05, showfit=False, bounds=None):
     """
     Keep lines near a list of wavelengths.
 
@@ -1516,13 +1517,13 @@ def keepLines(file, wave_list, tol=0.05, showfit=False):
 
     
     print(f'Written {outname}')
-    recomputeLines(file,showfit)
+    recomputeLines(file,showfit,bounds)
     return
 
 
 
 
-def cullLines(file, remove_list, showfit=False):
+def cullLines(file, remove_list, showfit=False, bounds=None):
     """
     Remove specific line indices from a peaklist and force creation of
     an '-ed' peaklist file.
@@ -1578,7 +1579,7 @@ def cullLines(file, remove_list, showfit=False):
         np.savetxt(f, np.column_stack(cols), fmt="%-12.6g")
 
     print(f"Written {outname} with {len(cols[0])} lines kept")
-    recomputeLines(file,showfit)
+    recomputeLines(file,showfit, bounds)
     return
 
 
