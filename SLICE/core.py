@@ -2,7 +2,7 @@
 Code originally written in MATLAB by: A. Bolatto
 
 Adapted and modified for use in Python by: K. Donaghue
-Last modified: 2/20/2026
+Last modified: 03/03/2026 by RCL
 
 This code is best applied to JWST or similar IR data
 
@@ -66,14 +66,14 @@ def _logging_setup():
     import datetime
     from datetime import timezone
 
-    #check if a user-defined logeer config file exists
-    if os.path.isfile("logger.conf"):
-        config.fileConfig("logger.conf")
+    #check if a user-defined logger config file exists in CWD
+    if os.path.isfile(os.path.abspath(os.getcwd())+"logger.conf"):
+        config.fileConfig(os.path.abspath(os.getcwd())+"logger.conf")
         user_config = True
 
     else: #use default
         user_config = False
-        log_file_path = "SLICE_logs/"
+        log_file_path = os.path.abspath(os.getcwd())+"/SLICE_logs/"
         if os.path.isdir(log_file_path) == False:
             os.makedirs(log_file_path, exist_ok=True)
         today = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -105,7 +105,7 @@ def _logging_setup():
             },
             "formatters":{
                 "basicFormatter": {
-                    "format": "%(levelname)s : %(module)s : %(funcName)s : %(message)s",
+                    "format": "%(levelname)s : %(module)s : %(funcName)s : %(lineno)d : %(message)s",
                 }
             },
         }       
@@ -119,7 +119,7 @@ def _logging_setup():
     #pass items from python warnings to logging instead
     logging.captureWarnings(True)
 
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger()
 
     #print date and time of script execution to log file
     now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d_%H:%M:%S")
@@ -290,7 +290,7 @@ def gaussmfit(x, y, K, S, X0, bounds=None, tol=1e-7, max_iter=200, lambda_init=1
         if accept_cond:  # Accept step
             converge_val = (chi2 - newchi2) / newchi2
             if verbose:
-                print(f"Iter {it:3d} | chi2={newchi2:.4e} | Δχ²/χ²={converge_val:.2e} | L={L:.2e}")
+                logger.info(f"Iter {it:3d} | chi2={newchi2:.4e} | Δχ²/χ²={converge_val:.2e} | L={L:.2e}")
             L /= 10
             K, S, X0, ymodel, delta, chi2 = newK, newS, newX0, newymodel, newdelta, newchi2
             if converge_val < tol:
@@ -496,7 +496,7 @@ def psfranger(wave,scale, mode=None):
     if mode is None:
         raise ValueError('Must specify what mode for the PSF')
     
-    if mode is 'MRSFWHMLaw2023':
+    if mode == 'MRSFWHMLaw2023':
         size = 0.033 * (wave) + 0.106
         fin = size * scale
     else:
@@ -1167,7 +1167,7 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
             if flag == -1:
                 return {'Aperture is completely empty'}
             if flag == -2:
-                print("Warning: spectrum contains NaNs, continuing with valid channels only.")
+                warnings.warn("Warning: spectrum contains NaNs, continuing with valid channels only.")
 
             x = np.array(r['x'][2])[~np.isnan(s)]
             y = s[~np.isnan(s)]
@@ -1246,7 +1246,7 @@ def catPeaks(fname, outname, pixco=None, scale=1.5, snr=5, thr=2, sky_annulus=No
         # Print peaks
         if verbose == True:
             for j, (loc, amp) in enumerate(p):
-                print(f"{onp + j:3d}   {loc:.4f} um {amp:8.4f} {r['bunit']}")
+                logger.info(f"{onp + j:3d}   {loc:.4f} um {amp:8.4f} {r['bunit']}")
         onp = np_detected + 1
 
         # Append fit info
@@ -1516,7 +1516,7 @@ def keepLines(file, wave_list, tol=0.05, showfit=False, bounds=None):
                 )
 
     
-    print(f'Written {outname}')
+    logger.info(f'Written {outname}')
     recomputeLines(file,showfit,bounds)
     return
 
@@ -1578,7 +1578,7 @@ def cullLines(file, remove_list, showfit=False, bounds=None):
             f.write(line)
         np.savetxt(f, np.column_stack(cols), fmt="%-12.6g")
 
-    print(f"Written {outname} with {len(cols[0])} lines kept")
+    logger.info(f"Written {outname} with {len(cols[0])} lines kept")
     recomputeLines(file,showfit, bounds)
     return
 
@@ -1638,9 +1638,9 @@ def readPDR4all(fname):
     # Warn if rows dropped
     dropped = df[df["RestValue"].isna()]
     if not dropped.empty:
-        print(f"[readPDR4all] Dropped {len(dropped)} rows with invalid RestValue in {fname}:")
+        logger.info(f"[readPDR4all] Dropped {len(dropped)} rows with invalid RestValue in {fname}:")
         for _, row in dropped.iterrows():
-            print(f"   Species={row['Species']} | Transition={row['transition']} | Raw='{row['RestValue_raw']}'")
+            logger.info(f"   Species={row['Species']} | Transition={row['transition']} | Raw='{row['RestValue_raw']}'")
 
     # Keep only valid ones
     df = df.dropna(subset=["RestValue"])
@@ -1659,7 +1659,7 @@ def readISO(fname):
     import pandas as pd
     df = pd.read_csv(
         fname,
-        delim_whitespace=True,
+        sep=r'\s+',
         comment="#",
         names=["LineName","transition","RestValue","elambda","ep","ip"],
         skiprows=4
@@ -1825,7 +1825,7 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
 
     if R is None:
         R = 250
-        print(f"Adopting default precision lambda/Dlambda={R}")
+        logger.info(f"Adopting default precision lambda/Dlambda={R}")
 
     # Catalogs
     
@@ -1873,11 +1873,11 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
     if vlsr > 20:
         wvr = wv / (1 + vlsr/clight)
         fp.write(f"Matching lines in {linefile} assuming vlsr={vlsr:.0f} km/s\n")
-        print(f"Matching lines in {linefile} assuming vlsr={vlsr:.0f} km/s")
+        logger.info(f"Matching lines in {linefile} assuming vlsr={vlsr:.0f} km/s")
     else:
         wvr = wv / (1 + vlsr)
         fp.write(f"Matching lines in {linefile} assuming redshift z={vlsr:.5f}\n")
-        print(f"Matching lines in {linefile} assuming redshift z={vlsr:.5f}")
+        logger.info(f"Matching lines in {linefile} assuming redshift z={vlsr:.5f}")
     fp.write("\n")
 
     nm = 0
@@ -2095,7 +2095,7 @@ def findLines(fname, outname, wmin, wmax, pixco=None, sky_annulus=None, scale=1.
     np.savetxt(f'{outname}_cont{wmin}-{wmax}mircon.txt', np.column_stack((xx, cont)), header=f'{fname}')
     np.savetxt(f'{outname}_model{wmin}-{wmax}mircon.txt', np.column_stack((xx, ymo)), header=f'{fname}')
 
-    print(f"findLines: detected {len(p)} lines in {wmin}-{wmax} µm")
+    logger.info(f"findLines: detected {len(p)} lines in {wmin}-{wmax} µm")
     
     if ID==True:
         if vlsr is None:
@@ -2251,7 +2251,7 @@ def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat
 
 
     fp.close()
-    print(f"findSpecies: wrote {len(matches)} matches to {outname}")
+    logger.info(f"findSpecies: wrote {len(matches)} matches to {outname}")
 
     # --- Optional plotting ---
     if plot and matches:
@@ -2279,9 +2279,9 @@ def findSpecies(linefile, species_list, vlsr, R=250, transition_filter=None, cat
             plt.tight_layout()
             plt.savefig(plotname, dpi=150)
             plt.close()
-            print(f"findSpecies: plot saved to {plotname}")
+            logger.info(f"findSpecies: plot saved to {plotname}")
         except Exception as e:
-            print(f"[findSpecies] Plotting failed: {e}")
+            logger.error(f"[findSpecies] Plotting failed: {e}")
 
     return matches
 
@@ -2703,7 +2703,7 @@ def getLines(peaklist, linelist, species, outfile):
     
 
     if len(wave) != len(best_labels):
-        print(f"⚠️ Warning: mismatch between wave ({len(wave)}) and best_labels ({len(best_labels)}) lengths")
+        warnings.warn(f"⚠️ Warning: mismatch between wave ({len(wave)}) and best_labels ({len(best_labels)}) lengths")
     
     with open(f'{outfile}-{species}_peaklist.txt', 'w') as fp:
             fp.write("%% ID wave(um) peak(MJy/sr) GaussK(MJy/sr) GaussFWHM(um) GaussX(um) Intensity(W/m2/sr) Flux(W/m2) " 
