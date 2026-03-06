@@ -2,7 +2,7 @@
 Code originally written in MATLAB by: A. Bolatto
 
 Adapted and modified for use in Python by: K. Donaghue
-Last modified: 03/05/2026 by RCL
+Last modified: 3/6/2026 by K. Donaghue
 
 This code is best applied to JWST or similar IR data
 
@@ -1963,7 +1963,7 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
 
 ######## Additional commands ####################
 
-def findLines(fname, outname, wmin, wmax, pixco=None, sky_annulus=None, scale=1.5, snr=5, thr=2, showfit=False, ID=False, vlsr=None, catdir=None):
+def findLines(fname, outname, wmin, wmax, pixco=None, sky_annulus=None, scale=1.5, snr=5, thr=2, bounds=None, showfit=False, ID=False, vlsr=None, catdir=None):
     """
     Extract spectrum from FITS cube and identify peaks within a wavelength range.
     Works like catPeaks, but restricted to [wmin, wmax]. output files are default labeled with 
@@ -1986,6 +1986,9 @@ def findLines(fname, outname, wmin, wmax, pixco=None, sky_annulus=None, scale=1.
         The scale factor to multiply the FWHM from the conical aperture to account for full PSF. defaults to 1.5
     snr, thr : float
         Peak finding parameters.(see catPeaks)
+    bounds : array_like
+        Array containing lists the lower and upper bounds for each parameter to be scaled by (e.g., [[K_min, S_min, X0_min],[K_max, S_max, X0_max]]) (Default: None)
+        Inputs should be given as floats i.e. 1.5 for 1.5 * K etc.
     showfit : bool
         Set to true to view the gaussian fitting of lines. Defaults to False
     ID : Bool
@@ -2043,7 +2046,7 @@ def findLines(fname, outname, wmin, wmax, pixco=None, sky_annulus=None, scale=1.
     scc = np.median(np.abs(cc - np.median(cc))) / 0.6745
     p = sigChans(dx, cc, scc, snr, thr)
 
-    q_result, ymo, cont = fitLines(xx, yy, p, showfit)
+    q_result, ymo, cont = fitLines(xx, yy, p, bounds, showfit)
     
     flux_chunk = np.zeros(len(q_result['area']))
     eflux_chunk = np.zeros(len(q_result['area']))
