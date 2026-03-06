@@ -2,7 +2,7 @@
 Code originally written in MATLAB by: A. Bolatto
 
 Adapted and modified for use in Python by: K. Donaghue
-Last modified: 03/03/2026 by RCL
+Last modified: 03/05/2026 by RCL
 
 This code is best applied to JWST or similar IR data
 
@@ -1769,8 +1769,8 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
     vlsr : float 
         velocity with respect to local standard of rest with units of km/s. 
         If input <= 20 assumes to be a redshift input instead. 
-    R : float 
-        precision level for uncertainty.
+    R : float or array
+        precision level for uncertainty; R=lambda/deltalambda. If array, must be (len(linefile),).
     outname : str 
         desired path to outfile if 
         new destination is desired. Optional. 
@@ -1823,9 +1823,17 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
     # open output
     fp = open(outname, "w")
 
+    #define the working wavelength resolution
     if R is None:
         R = 250
         logger.info(f"Adopting default precision lambda/Dlambda={R}")
+    #allow for variable R with wavelength
+    if type(R) == float:
+        R = R*np.ones_like(wv)
+    elif len(R) != len(wv):
+        logger.error(f"Invalid R, with shape {str(R.shape):s}. Must either be float or array of shape {str(wv.shape):s}.")
+        exit(1)
+
 
     # Catalogs
     
@@ -1881,8 +1889,10 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
     fp.write("\n")
 
     nm = 0
+
+
     for i, (lnum, w) in enumerate(zip(lineno, wv)):
-        err = w / R
+        err = w / R[i]
         fp.write(f"#{lnum:3d} {w:8.4f}+/-{err:0.4f} um (rest={wvr[i]:8.4f} um):\n       ")
         if verbose == True:
             logger.info(f"#{lnum:3d} {w:8.4f}+/-{err:0.4f} um (rest={wvr[i]:8.4f} um):\n       ")
@@ -1891,7 +1901,7 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
         nl = 0
         for j, catalog in enumerate(cat):
             dist = np.abs(wvr[i] - catalog["RestValue"])
-            ix = np.where(dist <= w/R)[0]
+            ix = np.where(dist <= w/R[i])[0]
             if len(ix) > 0:
                 for k in ix:
                     if "transition" in catalog:
@@ -1942,9 +1952,9 @@ def lineID(linefile, vlsr, R=250, outname=None, cat_path=None, ignore_cats=None,
                     if verbose == True:
                         logger.info(f"       NEXT: DLambda={dd[ix[k]]:0.4f} um, Catalog={catnames[cn[ix[k]]]}, Restwv={rv[ix[k]]:0.4f}\n       {tn[ix[k]]}")
         else:
-            fp.write(f"       NOMATCH within +/-{w/R:0.4f} um\n")
+            fp.write(f"       NOMATCH within +/-{w/R[i]:0.4f} um\n")
             if verbose == True:
-                logger.info(f"       NOMATCH within +/-{w/R:0.4f} um")
+                logger.info(f"       NOMATCH within +/-{w/R[i]:0.4f} um")
             nm += 1
 
     fp.close()
